@@ -1,16 +1,19 @@
-# UBER256 / UBERSHOW — a zero-asset DOS VGA demoscene project
+# UBER40K — a zero-asset DOS VGA/OPL2 demoscene production
 
 ![UBERSHOW running in DOSBox](screenshot.jpg)
 
 Two flat real-mode DOS `.COM` programs, hand-written in NASM assembly, that run on
-DOSBox or real VGA-compatible DOS hardware. There are no image files, no fonts loaded
-from disk, no music samples, no libraries, and no protected-mode extender — every pixel,
-glyph, note and 3D vertex is generated procedurally by the code itself.
+DOSBox or real VGA/Sound-Blaster-compatible DOS hardware. There are no image files, no
+fonts loaded from disk, no music samples or MOD/trackers, no libraries, and no
+protected-mode extender — every pixel, glyph, FM note and 3D vertex is generated
+procedurally by the code itself. "40K" names the size class this sits in: the full
+show, with a real 3D engine and Sound Blaster FM music, still fits comfortably inside
+a 40,960-byte budget — it currently runs at roughly a tenth of that.
 
-| File | Purpose | Size | CPU | Video |
-|---|---|---|---|---|
-| `intro256.asm` | strict ≤256-byte sizecoded intro | 70 bytes | 386+ | VGA mode 13h |
-| `showcase.asm` | full multi-scene production demo | ~3.9 KB | 386+ | VGA mode 13h |
+| File | Purpose | Size | CPU | Video | Audio |
+|---|---|---|---|---|---|
+| `intro256.asm` | strict ≤256-byte sizecoded intro | 70 bytes | 386+ | VGA mode 13h | PC speaker (ESC detect only) |
+| `showcase.asm` | full multi-scene production demo | ~4.4 KB | 386+ | VGA mode 13h | OPL2 FM (Sound Blaster/AdLib) |
 
 ## Quick start
 
@@ -48,7 +51,7 @@ visuals, palette, music and overlays all stay phase-locked to each other.
 | 13 | Scanwave / CRT bands | odd/even scanline shift |
 | 14 | Bitplane interference | AND-masked digital look |
 | 15 | Vortex mixer | signed-coordinate XOR, no division |
-| 16 | **Rotating wireframe cube** | real 3D, perspective: see below |
+| 16 | **Cube + octahedron (3D engine)** | real 3D, perspective: see below |
 | 17 | **3D starfield** | real 3D, perspective: see below |
 | 18 | Finale | combines time, coordinates and radial energy |
 
@@ -66,17 +69,23 @@ On top of every scene:
 - **A symmetric shutter transition** (black bars closing/opening) layered on top.
 - **A colour-cycling sine-wave text scroller** along the bottom (see below).
 
-### Rotating 3D wireframe cube (scene 16)
+### 3D engine: cube + octahedron (scene 16)
 
-The one non-procedural-field scene: it clears the backbuffer to a flat colour, then
-does real 3D — two-axis rotation (Y then X) of 8 vertices using a shared 256-entry
-sine table (`cos(a) = sin(a+64)`, a quarter-turn lookup, so one table serves both),
-a **true perspective projection** (divide by distance from the eye, not orthographic
-— nearer faces are visibly larger), and draws the 12 edges with a from-scratch
-Bresenham line routine. Edges are depth-cued: the two nearer edges per face render
-bright white, the two farther ones dim grey, for basic hidden-depth cueing without
-real hidden-line removal. All of it — rotation, projection, line draw — is 16-bit
-fixed-point integer math; no FPU, no floating point.
+The one non-procedural-field scene is driven by a genuine, reusable 3D engine rather
+than one hardcoded shape. `render_object` takes a vertex list, an edge list and a
+screen-space offset, and does the rest: two-axis rotation (Y then X) using a shared
+256-entry sine table (`cos(a) = sin(a+64)`, a quarter-turn lookup, so one table serves
+both), a **true perspective projection** (divide by distance from the eye, not
+orthographic — nearer faces are visibly larger), and a from-scratch bounds-checked
+Bresenham line routine for every edge. Edges are depth-cued: the nearer ones per
+object render bright white, the farther ones dim grey.
+
+The scene calls `render_object` twice with different data and different rotation
+rates — a cube and an octahedron, spinning independently and offset to opposite
+sides of the screen — to actually demonstrate it's an engine and not just "the cube
+scene with extra steps". Adding a third shape is a vertex/edge table and four more
+lines of calling code, not a new renderer. All of it — rotation, projection, line
+draw — is 16-bit fixed-point integer math; no FPU, no floating point.
 
 ### 3D starfield (scene 17)
 
@@ -91,7 +100,7 @@ the same depth-cueing idea as the cube's edges.
 
 ### Sine-wave text scroller
 
-A from-scratch 5×7 bitmap font (29 glyphs: the letters/digits/punctuation the
+A from-scratch 5×7 bitmap font (33 glyphs: the letters/digits/punctuation the
 scroller message actually uses) rendered column-by-column along the bottom 8
 scanlines, with each column's vertical position offset by the same sine table the
 cube uses, for the classic wavy-scroller look. The foreground colour cycles through
@@ -101,16 +110,29 @@ black/white (and four more for the rainbow) so the scroller and cube stay legibl
 regardless of what the main per-scene palette animation is doing elsewhere — see
 "Fixed vs. animated palette" below.
 
-### Music
+### Music: OPL2 FM (Sound Blaster / AdLib)
 
-A 32-step A-minor-pentatonic phrase on the PC speaker (PIT channel 2) — a 16-step
-"call" followed by a complementary 16-step descending "response" that resolves
-back onto the tonic, rather than one 16-step pattern looping identically forever.
-Real rests (not a continuous drone) and a short staccato mute before each
-retrigger give clean note attacks. Transposition across the show's three acts is
-done by **halving the PIT divisor** (exactly one octave per step) rather than a
-raw arithmetic offset, so every transposed note stays in tune regardless of its
-starting pitch.
+`UBERSHOW.COM` drives the OPL2 FM synthesiser chip directly at its fixed I/O port
+(`388h`/`389h`) — the same chip every Sound Blaster card carries for AdLib
+compatibility, so no `BLASTER` environment-variable base-port detection is needed at
+all; this works identically on any SB card and on a plain AdLib. `opl_init` sets up
+a simple two-operator FM voice (sine carrier and modulator, fast attack, moderate
+decay/sustain) on channel 0, and `opl_note_on`/`opl_note_off` key it by writing a
+packed frequency-number/block value to that channel's registers.
+
+The sequence itself is a 32-step A-minor-pentatonic phrase — a 16-step "call"
+followed by a complementary 16-step descending "response" that resolves back onto
+the tonic, rather than one pattern looping identically forever. Real rests (not a
+continuous drone) and a short silence before each retrigger give clean note
+attacks. Transposition across the show's three acts is done by **adding 0x400 to
+the packed note value per step** — block occupies bits 10-12 of that value, so this
+is always exactly one octave up regardless of the starting note, the same
+"transpose by a real musical interval, not an arbitrary offset" idea the earlier
+PC-speaker version used with PIT-divisor halving.
+
+`intro256.asm` still only uses the PC speaker, and only as a side effect of reading
+the keyboard controller for Esc — it has no music of its own, deliberately: a
+256-byte sizecoded intro has no room for an FM driver and a note sequencer.
 
 ### Fixed vs. animated palette
 
@@ -143,8 +165,8 @@ entry), polls port `3DAh` bit 3 for vertical retrace as a frame-pacing boundary,
 reads the 8042 keyboard controller directly (status port `64h`, data port `60h`) for
 Esc — with IRQ1 masked at the 8259 PIC for the program's duration, since otherwise
 the BIOS's own interrupt handler races the direct port poll and wins almost every
-time (see "Known issues this audit found and fixed" below). PC speaker output goes
-through port `61h` (gate) and PIT channel 2 (ports `42h`/`43h`).
+time (see "Known issues this audit found and fixed" below). Music output goes
+through the OPL2 FM synth at ports `388h`/`389h` (see "Music" above).
 
 ### True hardware double buffering (VGA page flip)
 
@@ -287,3 +309,9 @@ exiting cleanly on Esc.
   condition the loop checks to terminate. Fixed by computing `e2` once into a
   register and reusing it for both comparisons. Confirmed live in DOSBox: the
   cube now rotates continuously and the starfield animates correctly.
+- **Project renamed UBER40K**, with real OPL2 FM music replacing the PC
+  speaker (see "Music" above), and the single-cube renderer generalized into
+  `render_object`, a reusable wireframe-object engine now driving two
+  independently-rotating shapes (cube + octahedron) in scene 16 instead of
+  one hardcoded object. Verified live in DOSBox with a forced-scene debug
+  build: both objects render and rotate correctly and independently.

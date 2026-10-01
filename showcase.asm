@@ -60,7 +60,7 @@ start:
     out 21h,al                    ; our own port-60h/64h polling for Esc
     xor bp,bp
     call palette_tick
-    call speaker_on
+    call opl_init
 
 main:
     mov al,[vga_page]              ; render into the currently-hidden page
@@ -518,6 +518,10 @@ scene_vortex:
 ; clears the backbuffer to a flat colour first, then projects and draws a
 ; true 3D object (two-axis rotation, orthographic projection, Bresenham
 ; line draw) instead of a per-pixel procedural texture.
+; Two independent 3D objects sharing one engine (render_object): a cube and
+; an octahedron, each spun by a different pair of angle rates and offset to
+; opposite sides of the screen, so they visibly rotate differently rather
+; than looking like one re-skinned object.
 scene_cube:
     mov ax,CUBE_BG
     mov ah,al
@@ -532,58 +536,33 @@ scene_cube:
     shr ax,2
     and ax,255
     mov [cube_angle_x],ax
+    mov word [obj_verts_ptr],cube_verts
+    mov word [obj_edges_ptr],cube_edges
+    mov word [obj_vbytes],8*6
+    mov word [obj_ebytes],12*2
+    mov word [obj_offset_x],-70
+    mov word [obj_offset_y],0
+    mov byte [obj_fg],CUBE_FG
+    mov byte [obj_fg_dim],CUBE_FG_DIM
+    call render_object
 
-    xor bx,bx                      ; bx = vertex byte offset (3 words/vertex)
-    xor si,si                      ; si = proj_x/proj_y byte offset (1 word/vertex)
-.cv_loop:
-    mov ax,[cube_verts+bx]
-    mov [cube_px],ax
-    mov ax,[cube_verts+bx+2]
-    mov [cube_py],ax
-    mov ax,[cube_verts+bx+4]
-    mov [cube_pz],ax
-    call cube_rotate_project
-    mov ax,[cube_sx]
-    mov [proj_x+si],ax
-    mov ax,[cube_sy]
-    mov [proj_y+si],ax
-    mov ax,[cube_rz2]
-    mov [proj_z+si],ax             ; depth, for this edge's brightness pick
-    add bx,6
-    add si,2
-    cmp bx,8*6
-    jb .cv_loop
-
-    xor si,si
-.ce_loop:
-    mov al,[cube_edges+si]
-    xor ah,ah
-    shl ax,1
-    mov bx,ax
-    mov ax,[proj_x+bx]
-    mov [line_x0],ax
-    mov ax,[proj_y+bx]
-    mov [line_y0],ax
-    mov ax,[proj_z+bx]
-    mov dx,ax                      ; dx = vertex-0 depth
-    mov al,[cube_edges+si+1]
-    xor ah,ah
-    shl ax,1
-    mov bx,ax
-    mov ax,[proj_x+bx]
-    mov [line_x1],ax
-    mov ax,[proj_y+bx]
-    mov [line_y1],ax
-    add dx,[proj_z+bx]             ; dx = sum of both endpoints' depth
-    mov byte [line_color],CUBE_FG
-    cmp dx,0                       ; average depth < 0 => nearer the eye
-    jl .near
-    mov byte [line_color],CUBE_FG_DIM
-.near:
-    call draw_line
-    add si,2
-    cmp si,12*2
-    jb .ce_loop
+    mov ax,bp
+    shr ax,2
+    and ax,255
+    mov [cube_angle_y],ax
+    mov ax,bp
+    shr ax,1
+    and ax,255
+    mov [cube_angle_x],ax
+    mov word [obj_verts_ptr],octa_verts
+    mov word [obj_edges_ptr],octa_edges
+    mov word [obj_vbytes],6*6
+    mov word [obj_ebytes],12*2
+    mov word [obj_offset_x],70
+    mov word [obj_offset_y],0
+    mov byte [obj_fg],CUBE_FG
+    mov byte [obj_fg_dim],CUBE_FG_DIM
+    call render_object
     jmp overlay
 
 ; 17: 3D starfield. Each star has a genuine Z depth, computed fresh every
@@ -754,7 +733,7 @@ present:
     jnc main
 
 exit:
-    call speaker_off
+    call opl_note_off
     mov al,[pic_mask]
     out 21h,al                    ; restore BIOS IRQ1 keyboard servicing
     xor ah,ah
@@ -1269,6 +1248,80 @@ cube_rotate_project:
 .csy_hi_ok:
     ret
 
+; Generic wireframe-object renderer: projects every vertex of an arbitrary
+; object (any vertex/edge list, up to 8 vertices) through cube_rotate_project
+; -- so it uses whatever cube_angle_y/cube_angle_x the caller set -- offsets
+; the result in screen space by (obj_offset_x,obj_offset_y) so more than one
+; object can share the screen without colliding, then draws every edge with
+; the same near/far depth-cued colouring as the original single-cube scene.
+; This is what makes the engine support more than one hardcoded shape: the
+; cube and the octahedron are both just data fed through this one routine.
+render_object:
+    pusha
+    xor bx,bx
+    xor si,si
+.rv_loop:
+    mov di,[obj_verts_ptr]
+    add di,bx
+    mov ax,[di]
+    mov [cube_px],ax
+    mov ax,[di+2]
+    mov [cube_py],ax
+    mov ax,[di+4]
+    mov [cube_pz],ax
+    call cube_rotate_project
+    mov ax,[cube_sx]
+    add ax,[obj_offset_x]
+    mov [proj_x+si],ax
+    mov ax,[cube_sy]
+    add ax,[obj_offset_y]
+    mov [proj_y+si],ax
+    mov ax,[cube_rz2]
+    mov [proj_z+si],ax
+    add bx,6
+    add si,2
+    cmp bx,[obj_vbytes]
+    jb .rv_loop
+
+    xor si,si
+.re_loop:
+    mov di,[obj_edges_ptr]
+    add di,si
+    mov al,[di]
+    xor ah,ah
+    shl ax,1
+    mov bx,ax
+    mov ax,[proj_x+bx]
+    mov [line_x0],ax
+    mov ax,[proj_y+bx]
+    mov [line_y0],ax
+    mov ax,[proj_z+bx]
+    mov dx,ax                      ; dx = vertex-0 depth
+    mov di,[obj_edges_ptr]
+    add di,si
+    mov al,[di+1]
+    xor ah,ah
+    shl ax,1
+    mov bx,ax
+    mov ax,[proj_x+bx]
+    mov [line_x1],ax
+    mov ax,[proj_y+bx]
+    mov [line_y1],ax
+    add dx,[proj_z+bx]             ; dx = sum of both endpoints' depth
+    mov al,[obj_fg]
+    mov [line_color],al
+    cmp dx,0                       ; average depth < 0 => nearer the eye
+    jl .ro_near
+    mov al,[obj_fg_dim]
+    mov [line_color],al
+.ro_near:
+    call draw_line
+    add si,2
+    cmp si,[obj_ebytes]
+    jb .re_loop
+    popa
+    ret
+
 ; General-purpose Bresenham line draw between (line_x0,line_y0) and
 ; (line_x1,line_y1) in line_color, with per-pixel bounds checks so an
 ; out-of-range projected point can never write outside the backbuffer.
@@ -1375,35 +1428,125 @@ key_escape:
 .yes: stc
     ret
 
-speaker_on:
-    in al,61h
-    or al,3
-    out 61h,al
+; --- OPL2 FM synth driver (Sound Blaster / AdLib, port 388h/389h) ---
+; The OPL2 chip is at a fixed I/O port on every SB card regardless of its
+; base DSP address, so no BLASTER-variable detection is needed. Every write
+; is index-then-data with the chip's required settle delays (a handful of
+; dummy status-port reads; OPL2 doesn't need precise timing, just "long
+; enough", so this avoids a hardware-specific wait-state calculation).
+
+; Write AL to OPL2 register AH.
+opl_write:
+    push ax
+    push bx
+    push cx
+    push dx
+    mov bl,al                     ; stash the data byte (the wait loop
+    mov dx,388h                   ; below clobbers al via "in al,dx")
+    mov al,ah
+    out dx,al
+    mov cx,6
+.w1: in al,dx
+    loop .w1
+    mov al,bl
+    mov dx,389h
+    out dx,al
+    mov cx,35
+.w2: in al,dx
+    loop .w2
+    pop dx
+    pop cx
+    pop bx
+    pop ax
     ret
-speaker_off:
-    in al,61h
-    and al,0FCh
-    out 61h,al
+
+; One-time instrument setup on channel 0: a simple two-operator FM voice
+; (fast attack, moderate decay/sustain, sine waveforms) -- not trying to
+; imitate any real instrument, just a clean, clearly-FM lead tone.
+opl_init:
+    mov ah,01h
+    mov al,20h                    ; enable waveform select (register 0..3)
+    call opl_write
+    mov ah,20h
+    mov al,01h                    ; modulator: multiple=1
+    call opl_write
+    mov ah,23h
+    mov al,01h                    ; carrier: multiple=1
+    call opl_write
+    mov ah,40h
+    mov al,12h                    ; modulator level (attenuated -> timbre)
+    call opl_write
+    mov ah,43h
+    mov al,00h                    ; carrier level (full volume)
+    call opl_write
+    mov ah,60h
+    mov al,0F0h                   ; modulator attack/decay: fast/fast
+    call opl_write
+    mov ah,63h
+    mov al,0F2h                   ; carrier attack/decay: fast/moderate
+    call opl_write
+    mov ah,80h
+    mov al,77h                    ; modulator sustain/release
+    call opl_write
+    mov ah,83h
+    mov al,77h                    ; carrier sustain/release
+    call opl_write
+    mov ah,0C0h
+    mov al,01h                    ; feedback/connection: simple FM pair
+    call opl_write
+    mov ah,0E0h
+    mov al,00h                    ; modulator waveform: sine
+    call opl_write
+    mov ah,0E3h
+    mov al,00h                    ; carrier waveform: sine
+    call opl_write
+    ret
+
+; AX = packed fnum/block (fnum in bits 0-9, block in bits 10-12; see the
+; `notes` table comment) -- key the channel-0 note on.
+opl_note_on:
+    push ax
+    push bx
+    push cx
+    mov bx,ax
+    mov ah,0A0h
+    mov al,bl                     ; fnum low 8 bits
+    call opl_write
+    mov ax,bx
+    mov cl,8
+    shr ax,cl                     ; bits0-1=fnum hi, bits2-4=block
+    and al,1Fh
+    or al,20h                     ; key-on bit
+    mov ah,0B0h
+    call opl_write
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+opl_note_off:
+    mov ah,0B0h
+    xor al,al                     ; key-on bit clear; block/fnum don't
+    call opl_write                ; matter while silent
     ret
 
 ; 32-step A-minor-pentatonic phrase (a 16-step call, then a complementary
 ; 16-step response) with rests, update every 8 frames (~8.75 Hz at VGA
-; 70 Hz). A 0 entry in `notes` is a rest: the speaker is muted rather than
-; reprogrammed, so the pattern has actual rhythm instead of one continuous
-; drone. Transposed by show act (cur_scene/8, the same shared value main:
-; already computed) by HALVING the PIT divisor per octave rather than a
-; raw subtraction -- divisor halving is always exactly one octave
-; regardless of the starting note, so every transposed step stays in tune
-; instead of drifting by an inconsistent interval.
+; 70 Hz). A 0 entry in `notes` is a rest: the channel is keyed off rather
+; than retriggered, so the pattern has actual rhythm instead of one
+; continuous drone. Transposed by show act (cur_scene/8, the same shared
+; value main: already computed) by adding 0x400 per step to the packed
+; note value -- block occupies bits 10-12, so this is exactly one octave
+; up each time, regardless of the starting note.
 music_tick:
-    ; Two frames before each new step, mute briefly: a short, clean silence
-    ; before the next retrigger reads as a real note attack instead of the
-    ; PIT just sliding frequency under one continuously-gated speaker.
+    ; Two frames before each new step, key off briefly: a short, clean
+    ; silence before the next retrigger reads as a real note attack
+    ; instead of one note sliding straight into the next.
     mov ax,bp
     and ax,7
     cmp ax,6
     jne .checkbeat
-    call speaker_off
+    call opl_note_off
     ret
 .checkbeat:
     mov ax,bp
@@ -1416,7 +1559,7 @@ music_tick:
     mov ax,[notes+si]
     cmp ax,0
     jne .has_note
-    call speaker_off           ; rest: mute until the next audible step
+    call opl_note_off          ; rest: silence until the next audible step
     jmp .done
 .has_note:
     mov cl,[cur_scene]
@@ -1425,25 +1568,21 @@ music_tick:
     jbe .shiftok
     mov cl,2
 .shiftok:
-    shr ax,cl                  ; each unit = one octave up
-    call speaker_on             ; re-arm the gate in case a rest muted it
-    mov bx,ax
-    mov al,0B6h
-    out 43h,al
-    mov ax,bx
-    out 42h,al
-    mov al,ah
-    out 42h,al
+    xor ch,ch
+    shl cx,10                  ; each unit = 0x400 = one octave up (block
+    add ax,cx                  ; lives in bits 10-12 of the packed value)
+    call opl_note_on
 .done: ret
 
-; A-minor pentatonic, PIT divisors for A3,C4,D4,E4,G4,A4,C5,D5,E5,G5 (0=rest).
-; First 16 steps are the "call" phrase, last 16 a complementary descending
-; "response" that resolves back onto A4 so the 32-step loop feels like one
-; phrase instead of two independent halves stitched together.
-notes dw 2712,2280,1810,0,2032,2280,2712,0
-      dw 3044,2712,2280,2032,1810,0,2280,1522
-      dw 1522,1810,2032,0,2280,2032,1810,0
-      dw 3044,1810,2280,2712,3044,0,2280,2712
+; A-minor pentatonic, OPL2 packed fnum/block for A3,C4,D4,E4,G4,A4,C5,D5,
+; E5,G5 (0=rest). First 16 steps are the "call" phrase, last 16 a
+; complementary descending "response" resolving back onto A4, so the
+; 32-step loop feels like one phrase instead of two halves stitched
+; together.
+notes dw 0x1244,0x12b2,0x1365,0,0x1306,0x12b2,0x1244,0
+      dw 0x1205,0x1244,0x12b2,0x1306,0x1365,0,0x12b2,0x1605
+      dw 0x1605,0x1365,0x1306,0,0x12b2,0x1306,0x1365,0
+      dw 0x1205,0x1365,0x12b2,0x1244,0x1205,0,0x12b2,0x1244
 old_mode db 3
 vga_page db 0                     ; which page we render into next
 show_page db 0                    ; which page present: just flipped to
@@ -1479,6 +1618,16 @@ proj_x times 8 dw 0
 proj_y times 8 dw 0
 proj_z times 8 dw 0
 
+; --- generic multi-object renderer state (render_object) ---
+obj_verts_ptr dw 0
+obj_edges_ptr dw 0
+obj_vbytes dw 0                   ; vertex count * 6
+obj_ebytes dw 0                   ; edge count * 2
+obj_offset_x dw 0                 ; screen-space translation for this object
+obj_offset_y dw 0
+obj_fg db 0
+obj_fg_dim db 0
+
 ; --- 3D starfield scene state ---
 star_idx dw 0
 star_z dw 0
@@ -1500,6 +1649,17 @@ cube_verts: dw -40,-40,-40
             dw -40, 40, 40
 cube_edges: db 0,1, 1,2, 2,3, 3,0, 4,5, 5,6, 6,7, 7,4, 0,4, 1,5, 2,6, 3,7
 
+; Octahedron: one vertex out along each +/- axis; every vertex connects to
+; every vertex on a DIFFERENT axis (12 edges), but never to its own
+; opposite (that would cross through the centre, not an edge).
+octa_verts: dw  35,  0,  0
+            dw -35,  0,  0
+            dw   0, 35,  0
+            dw   0,-35,  0
+            dw   0,  0, 35
+            dw   0,  0,-35
+octa_edges: db 0,2, 0,3, 0,4, 0,5, 1,2, 1,3, 1,4, 1,5, 2,4, 2,5, 3,4, 3,5
+
 ; --- general-purpose line-draw state (Bresenham, used by scene_cube) ---
 line_x0 dw 0
 line_y0 dw 0
@@ -1519,32 +1679,34 @@ stack_bottom: times 256 db 0      ; our own small stack, kept by the SETBLOCK
 stack_top:
 
 ; ---- font 5x7 bitmap, CHARSET order, 8 bytes/glyph (8th row blank) ----
-; charset: ' ABCDEFGHILMNOPRSTUVWXY256/,-'  (29 glyphs)
+; charset: ' ABCDEFGHIKLMNOPRSTUVWXY023456/,-'  (33 glyphs)
 font_data:
     db 0,0,0,0,0,0,0,0,112,136,136,248,136,136,136,0,240,136,136,240
     db 136,136,240,0,120,128,128,128,128,128,120,0,240,136,136,136,136,136,240,0
     db 248,128,128,240,128,128,248,0,248,128,128,240,128,128,128,0,120,128,128,184
     db 136,136,120,0,136,136,136,248,136,136,136,0,248,32,32,32,32,32,248,0
-    db 128,128,128,128,128,128,248,0,136,216,168,136,136,136,136,0,136,200,168,152
-    db 136,136,136,0,112,136,136,136,136,136,112,0,240,136,136,240,128,128,128,0
-    db 240,136,136,240,160,144,136,0,120,128,128,112,8,8,240,0,248,32,32,32
-    db 32,32,32,0,136,136,136,136,136,136,112,0,136,136,136,136,136,80,32,0
-    db 136,136,136,168,168,216,136,0,136,136,80,32,80,136,136,0,136,136,80,32
-    db 32,32,32,0,112,136,8,16,32,64,248,0,248,128,240,8,8,136,112,0
-    db 112,128,128,240,136,136,112,0,8,16,32,32,64,128,128,0,0,0,0,0
-    db 32,32,64,0,0,0,0,248,0,0,0,0
+    db 136,144,160,192,160,144,136,0,128,128,128,128,128,128,248,0,136,216,168,136
+    db 136,136,136,0,136,200,168,152,136,136,136,0,112,136,136,136,136,136,112,0
+    db 240,136,136,240,128,128,128,0,240,136,136,240,160,144,136,0,120,128,128,112
+    db 8,8,240,0,248,32,32,32,32,32,32,0,136,136,136,136,136,136,112,0
+    db 136,136,136,136,136,80,32,0,136,136,136,168,168,216,136,0,136,136,80,32
+    db 80,136,136,0,136,136,80,32,32,32,32,0,112,136,152,168,200,136,112,0
+    db 112,136,8,16,32,64,248,0,248,8,48,8,8,136,112,0,16,48,80,144
+    db 248,16,16,0,248,128,240,8,8,136,112,0,112,128,128,240,136,136,112,0
+    db 8,16,32,32,64,128,128,0,0,0,0,0,32,32,64,0,0,0,0,248
+    db 0,0,0,0
 
-; ---- scroller message, 155 glyph indices into font_data ----
+; ---- scroller message, 147 glyph indices into font_data ----
 scroll_msg:
-    db 18,2,5,15,23,24,25,0,26,0,18,2,5,15,16,8,13,20,0,28
-    db 0,1,0,6,18,10,10,22,0,14,15,13,3,5,4,18,15,1,10,0
-    db 4,13,16,0,19,7,1,0,4,5,11,13,0,28,0,12,13,0,1,16
-    db 16,5,17,16,27,0,12,13,0,5,21,3,18,16,5,16,0,28,0,16
-    db 9,21,17,5,5,12,0,16,3,5,12,5,16,0,14,10,18,16,0,1
-    db 0,15,13,17,1,17,9,12,7,0,3,18,2,5,0,28,0,3,13,4
-    db 5,0,9,16,0,17,8,5,0,1,15,17,0,28,0,14,15,5,16,16
-    db 0,5,16,3,0,17,13,0,5,21,9,17,0,28,0
-SCROLL_MSG_LEN equ 155
+    db 19,2,5,16,27,24,10,0,30,0,19,2,5,16,17,8,14,21,0,32
+    db 0,1,0,6,19,11,11,23,0,15,16,14,3,5,4,19,16,1,11,0
+    db 4,14,17,0,20,7,1,0,4,5,12,14,0,32,0,4,19,1,11,0
+    db 26,4,0,17,8,1,15,5,0,5,13,7,9,13,5,0,32,0,17,14
+    db 19,13,4,0,2,11,1,17,18,5,16,0,6,12,0,12,19,17,9,3
+    db 0,32,0,13,14,0,1,17,17,5,18,17,31,0,13,14,0,5,22,3
+    db 19,17,5,17,0,32,0,15,16,5,17,17,0,5,17,3,0,18,14,0
+    db 5,22,9,18,0,32,0
+SCROLL_MSG_LEN equ 147
 
 ; ---- sin table: 256 entries, sin(a)*63 as signed byte; cos(a) = sin((a+64)&255) ----
 sintab:

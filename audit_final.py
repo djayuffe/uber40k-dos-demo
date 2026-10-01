@@ -6,13 +6,15 @@ s=p.read_text()
 errors=[]
 required=[
 "%define SCENE_COUNT 18","call wait_vsync","call palette_tick",
-"call speaker_off","in al,64h","in al,60h","scene_finale:","scene_cube:",
+"in al,64h","in al,60h","scene_finale:","scene_cube:",
 "scene_starfield:","pal_limit db 63","scene_marker:","transition_wipe:",
 "call scene_marker","call transition_wipe","scroll_draw:","call scroll_draw",
-"draw_line:","cube_rotate_project:","cur_scene db 0",
+"draw_line:","cube_rotate_project:","render_object:","cur_scene db 0",
 # true VGA page-flip double buffering: 128K memory window + CRTC
 # start-address flip, not a system-RAM backbuffer + blit
 "and al,0F3h","vga_page db 0","show_page db 0","mov dx,3D4h",
+# OPL2 FM music (Sound Blaster / AdLib, fixed port 388h/389h)
+"opl_write:","opl_init:","opl_note_on:","opl_note_off:","mov dx,388h",
 ]
 for x in required:
     if x not in s: errors.append("missing: "+x)
@@ -20,7 +22,9 @@ scenes=re.findall(r"^scene_(?!marker)[a-z0-9_]+:",s,re.M)
 if len(scenes)!=18: errors.append(f"expected 18 scenes, found {len(scenes)}")
 # scenes whose contract isn't "full 320x200 STOSB sweep ending in jmp overlay"
 SPECIAL = {
-    "scene_cube:": ("rep stosw", "call draw_line"),
+    # scene_cube renders two objects (cube + octahedron) through the shared
+    # render_object engine, which is what actually calls draw_line.
+    "scene_cube:": ("rep stosw", "call render_object"),
     "scene_starfield:": ("rep stosw", "idiv word [star_z]"),
 }
 for label in scenes:

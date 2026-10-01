@@ -14,12 +14,15 @@ targets=["scene_plasma","scene_tunnel","scene_xor","scene_moire","scene_checker"
          "scene_cube","scene_starfield","scene_finale"]
 for x in targets:
     if s.count(x+":")!=1: errors.append("scene label "+x)
-for x in ["call wait_vsync","call palette_tick","call music_tick","call speaker_off",
+for x in ["call wait_vsync","call palette_tick","call music_tick",
           "in al,64h","in al,60h","mov ax,13h","int 10h","pal_limit db 63",
-          "mov ah,4Ah","call scroll_draw","call draw_line","cube_rotate_project:",
-          "font_data:","scroll_msg:","sintab:",
+          "mov ah,4Ah","call scroll_draw","call draw_line","call render_object",
+          "cube_rotate_project:","font_data:","scroll_msg:","sintab:",
+          "octa_verts:","octa_edges:",
           # true VGA page-flip double buffering invariants
-          "and al,0F3h","vga_page db 0","show_page db 0","mov dx,3D4h","mov dx,3CEh"]:
+          "and al,0F3h","vga_page db 0","show_page db 0","mov dx,3D4h","mov dx,3CEh",
+          # OPL2 FM music (Sound Blaster / AdLib) invariants
+          "opl_write:","opl_init:","opl_note_on:","opl_note_off:","mov dx,388h"]:
     if x not in s: errors.append("missing invariant "+x)
 if "org 100h" not in s.lower() or "bits 16" not in s.lower(): errors.append("showcase COM model")
 if "org 100h" not in i.lower() or "bits 16" not in i.lower(): errors.append("intro COM model")
@@ -29,9 +32,10 @@ if errors:
     print("RELEASE AUDIT: FAIL")
     print("\n".join(errors));sys.exit(1)
 print("RELEASE AUDIT: PASS")
-print("  18 explicit scenes (16 fields + rotating 3D cube + 3D starfield)")
+print("  18 explicit scenes (16 fields + 3D cube/octahedron engine + 3D starfield)")
 print("  bottom sine-wave text scroller")
 print("  own-block SETBLOCK shrink (code/data/stack)")
 print("  true VGA hardware double buffering (128K window + CRTC page flip)")
-print("  palette, input, audio and cleanup invariants")
+print("  OPL2 FM music (Sound Blaster / AdLib, port 388h)")
+print("  palette, input, video and cleanup invariants")
 print("  strict intro build gate present")
