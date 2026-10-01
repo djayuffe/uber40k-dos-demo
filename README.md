@@ -13,7 +13,7 @@ a 40,960-byte budget — it currently runs at roughly a tenth of that.
 | File | Purpose | Size | CPU | Video | Audio |
 |---|---|---|---|---|---|
 | `intro256.asm` | strict ≤256-byte sizecoded intro | 70 bytes | 386+ | VGA mode 13h | PC speaker (ESC detect only) |
-| `showcase.asm` | full multi-scene production demo | ~4.4 KB | 386+ | VGA mode 13h | OPL2 FM (Sound Blaster/AdLib) |
+| `showcase.asm` | full multi-scene production demo | ~4.8 KB | 386+ | VGA mode 13h | OPL2 FM (Sound Blaster/AdLib) |
 
 ## Quick start
 
@@ -115,20 +115,40 @@ regardless of what the main per-scene palette animation is doing elsewhere — s
 `UBERSHOW.COM` drives the OPL2 FM synthesiser chip directly at its fixed I/O port
 (`388h`/`389h`) — the same chip every Sound Blaster card carries for AdLib
 compatibility, so no `BLASTER` environment-variable base-port detection is needed at
-all; this works identically on any SB card and on a plain AdLib. `opl_init` sets up
-a simple two-operator FM voice (sine carrier and modulator, fast attack, moderate
-decay/sustain) on channel 0, and `opl_note_on`/`opl_note_off` key it by writing a
-packed frequency-number/block value to that channel's registers.
+all; this works identically on any SB card and on a plain AdLib. It uses the chip
+about as fully as a sizecoded driver reasonably can: three independent melodic
+voices plus the chip's built-in rhythm section, not one monophonic beep.
 
-The sequence itself is a 32-step A-minor-pentatonic phrase — a 16-step "call"
-followed by a complementary 16-step descending "response" that resolves back onto
-the tonic, rather than one pattern looping identically forever. Real rests (not a
-continuous drone) and a short silence before each retrigger give clean note
-attacks. Transposition across the show's three acts is done by **adding 0x400 to
-the packed note value per step** — block occupies bits 10-12 of that value, so this
-is always exactly one octave up regardless of the starting note, the same
+**Three simultaneous FM voices**, each with its own instrument patch and its own
+step sequencer, all still perfectly phase-locked to the single global frame counter:
+- **Lead** (channel 0) — the original 32-step A-minor-pentatonic call-and-response
+  phrase: a clean two-operator FM voice, fast attack, moderate decay.
+- **Bass** (channel 1) — a sparse low-register pattern (mostly rests, roots landing
+  on the beat) with a punchier, more harmonically rich patch (full modulator depth,
+  a half-sine carrier for extra bite), outlining the harmony under the lead.
+- **Pad** (channel 2) — a slow sustained chord tone (true-sustain envelope, soft
+  volume) that only changes every 128 frames, cycling through A-minor triad tones
+  for a gentle harmonic bed under the other two voices.
+
+`opl_set_instrument` is a generic routine — channel number plus an 11-byte patch
+(operator characteristics, levels, envelopes, waveforms, feedback/connection) — so
+adding a fourth voice is a new patch and a new step table, not new driver code; the
+channel-to-operator register mapping (`chan_op1`/`chan_op2`) is the standard OPL2
+layout, so it works for any of the chip's 9 channels. `opl_note_on`/`opl_note_off`
+take the channel number the same way.
+
+**Rhythm section**: `drum_tick` drives the OPL2's built-in percussion mode (register
+`0xBDh`, which repurposes channels 6-7's operators as dedicated drum voices) for a
+simple kick-and-snare pattern — bass drum on the downbeat of every 8-step group,
+snare on the backbeat — locked to the same step grid as the lead.
+
+All three melodic voices transpose across the show's three acts by **adding 0x400
+to the packed note value per step** — block occupies bits 10-12 of that value, so
+this is always exactly one octave up regardless of the starting note, the same
 "transpose by a real musical interval, not an arbitrary offset" idea the earlier
-PC-speaker version used with PIT-divisor halving.
+PC-speaker version used with PIT-divisor halving. Real rests (not a continuous
+drone) and a short silence before each retrigger give the lead and bass clean note
+attacks; the pad, being a sustained drone, retriggers legato instead.
 
 `intro256.asm` still only uses the PC speaker, and only as a side effect of reading
 the keyboard controller for Esc — it has no music of its own, deliberately: a
@@ -315,3 +335,11 @@ exiting cleanly on Esc.
   independently-rotating shapes (cube + octahedron) in scene 16 instead of
   one hardcoded object. Verified live in DOSBox with a forced-scene debug
   build: both objects render and rotate correctly and independently.
+- **Music expanded from one monophonic channel to three simultaneous FM
+  voices (lead/bass/pad) plus the OPL2's built-in rhythm section** (see
+  "Music" above). Generalized `opl_note_on`/`opl_note_off` to take a
+  channel number, and added `opl_set_instrument` so new voices are just a
+  patch + step table, not new driver code. Verified: all three audit
+  scripts pass, a 15s headless run completes with no crash, and a live
+  DOSBox run confirmed the rest of the demo (rendering, both 3D objects,
+  scroller) is unaffected by the heavier register/channel usage.

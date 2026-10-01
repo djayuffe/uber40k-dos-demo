@@ -13,8 +13,12 @@ required=[
 # true VGA page-flip double buffering: 128K memory window + CRTC
 # start-address flip, not a system-RAM backbuffer + blit
 "and al,0F3h","vga_page db 0","show_page db 0","mov dx,3D4h",
-# OPL2 FM music (Sound Blaster / AdLib, fixed port 388h/389h)
+# OPL2 FM music (Sound Blaster / AdLib, fixed port 388h/389h): three
+# simultaneous voices (lead/bass/pad) plus the built-in rhythm section
 "opl_write:","opl_init:","opl_note_on:","opl_note_off:","mov dx,388h",
+"opl_set_instrument:","chan_op1 db","chan_op2 db","bass_tick:","pad_tick:",
+"drum_tick:","inst_lead db","inst_bass db","inst_pad","inst_bd","inst_sd",
+"mov ah,0BDh",
 ]
 for x in required:
     if x not in s: errors.append("missing: "+x)

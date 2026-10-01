@@ -1460,74 +1460,165 @@ opl_write:
     pop ax
     ret
 
-; One-time instrument setup on channel 0: a simple two-operator FM voice
-; (fast attack, moderate decay/sustain, sine waveforms) -- not trying to
-; imitate any real instrument, just a clean, clearly-FM lead tone.
+; OPL2 channel -> operator register-offset map (standard chip layout: 18
+; operators serve 9 two-operator channels, in three groups of 3 channels
+; each 8 registers apart). opl_set_instrument and the note routines below
+; use this so they work for any channel 0-8, not just a single hardcoded
+; voice -- which is what lets this driver run a lead, a bass and a pad
+; simultaneously instead of one monophonic channel.
+chan_op1 db 0,1,2,8,9,10,16,17,18
+chan_op2 db 3,4,5,11,12,13,19,20,21
+
+; Program channel CL's two operators and feedback/connection from an
+; 11-byte instrument patch at DS:SI: [mod char,level,AD,SR,wave, car
+; char,level,AD,SR,wave, feedback/connection]. "char" packs EG-TYPE
+; (sustain) in bit5 and multiple in bits0-3; "level" packs KSL/total
+; level; "AD"/"SR" are attack-decay / sustain-release nibble pairs.
+opl_set_instrument:
+    push ax
+    push bx
+    push dx
+    push si
+    mov bl,cl
+    xor bh,bh
+    mov dl,[chan_op1+bx]           ; dl = modulator operator offset
+    mov dh,[chan_op2+bx]           ; dh = carrier operator offset
+
+    mov al,[si]
+    mov ah,20h
+    add ah,dl
+    call opl_write
+    mov al,[si+1]
+    mov ah,40h
+    add ah,dl
+    call opl_write
+    mov al,[si+2]
+    mov ah,60h
+    add ah,dl
+    call opl_write
+    mov al,[si+3]
+    mov ah,80h
+    add ah,dl
+    call opl_write
+    mov al,[si+4]
+    mov ah,0E0h
+    add ah,dl
+    call opl_write
+
+    mov al,[si+5]
+    mov ah,20h
+    add ah,dh
+    call opl_write
+    mov al,[si+6]
+    mov ah,40h
+    add ah,dh
+    call opl_write
+    mov al,[si+7]
+    mov ah,60h
+    add ah,dh
+    call opl_write
+    mov al,[si+8]
+    mov ah,80h
+    add ah,dh
+    call opl_write
+    mov al,[si+9]
+    mov ah,0E0h
+    add ah,dh
+    call opl_write
+
+    mov al,[si+10]
+    mov ah,0C0h
+    add ah,cl
+    call opl_write
+
+    pop si
+    pop dx
+    pop bx
+    pop ax
+    ret
+
+; One-time setup: three independent melodic voices (lead/bass/pad, channels
+; 0-2) plus the chip's built-in rhythm section (bass drum + snare, borrowed
+; from channels 6-7) -- a real small arrangement instead of one monophonic
+; beep, using as much of what the OPL2 actually offers as this driver
+; reasonably can.
 opl_init:
     mov ah,01h
-    mov al,20h                    ; enable waveform select (register 0..3)
+    mov al,20h                    ; enable waveform select (registers 0..3)
     call opl_write
-    mov ah,20h
-    mov al,01h                    ; modulator: multiple=1
+
+    mov cl,0
+    mov si,inst_lead
+    call opl_set_instrument
+    mov cl,1
+    mov si,inst_bass
+    call opl_set_instrument
+    mov cl,2
+    mov si,inst_pad
+    call opl_set_instrument
+    mov cl,6
+    mov si,inst_bd
+    call opl_set_instrument
+    mov cl,7
+    mov si,inst_sd
+    call opl_set_instrument
+
+    ; Rhythm-channel frequencies are set once via their own A/B registers;
+    ; in rhythm mode the key-on bit normally in 0xB6/0xB7 is ignored, each
+    ; drum instead triggered by its own bit in 0xBDh (see drum_tick).
+    mov ah,0A6h
+    mov al,44h                    ; bass drum pitch (~A1, deep thump)
     call opl_write
-    mov ah,23h
-    mov al,01h                    ; carrier: multiple=1
+    mov ah,0B6h
+    mov al,06h
     call opl_write
-    mov ah,40h
-    mov al,12h                    ; modulator level (attenuated -> timbre)
+    mov ah,0A7h
+    mov al,06h                    ; snare pitch (~D2, brighter than BD)
     call opl_write
-    mov ah,43h
-    mov al,00h                    ; carrier level (full volume)
+    mov ah,0B7h
+    mov al,07h
     call opl_write
-    mov ah,60h
-    mov al,0F0h                   ; modulator attack/decay: fast/fast
-    call opl_write
-    mov ah,63h
-    mov al,0F2h                   ; carrier attack/decay: fast/moderate
-    call opl_write
-    mov ah,80h
-    mov al,77h                    ; modulator sustain/release
-    call opl_write
-    mov ah,83h
-    mov al,77h                    ; carrier sustain/release
-    call opl_write
-    mov ah,0C0h
-    mov al,01h                    ; feedback/connection: simple FM pair
-    call opl_write
-    mov ah,0E0h
-    mov al,00h                    ; modulator waveform: sine
-    call opl_write
-    mov ah,0E3h
-    mov al,00h                    ; carrier waveform: sine
+
+    mov byte [opl_bd_base],20h    ; rhythm mode on, no extra AM/VIB depth
+    mov ah,0BDh
+    mov al,20h
     call opl_write
     ret
 
 ; AX = packed fnum/block (fnum in bits 0-9, block in bits 10-12; see the
-; `notes` table comment) -- key the channel-0 note on.
+; `notes` table comment), CL = channel (0-8) -- key that channel's note on.
 opl_note_on:
     push ax
     push bx
     push cx
     mov bx,ax
     mov ah,0A0h
+    add ah,cl
     mov al,bl                     ; fnum low 8 bits
     call opl_write
     mov ax,bx
+    push cx                       ; shr needs CL=8, but CL holds the channel
     mov cl,8
-    shr ax,cl                     ; bits0-1=fnum hi, bits2-4=block
+    shr ax,cl
+    pop cx                        ; channel is back in cl for the B-register
     and al,1Fh
     or al,20h                     ; key-on bit
     mov ah,0B0h
+    add ah,cl
     call opl_write
     pop cx
     pop bx
     pop ax
     ret
 
+; CL = channel (0-8) -- key that channel's note off.
 opl_note_off:
+    push ax
     mov ah,0B0h
+    add ah,cl
     xor al,al                     ; key-on bit clear; block/fnum don't
     call opl_write                ; matter while silent
+    pop ax
     ret
 
 ; 32-step A-minor-pentatonic phrase (a 16-step call, then a complementary
@@ -1538,6 +1629,14 @@ opl_note_off:
 ; value main: already computed) by adding 0x400 per step to the packed
 ; note value -- block occupies bits 10-12, so this is exactly one octave
 ; up each time, regardless of the starting note.
+; LEAD (channel 0): 32-step A-minor-pentatonic phrase (a 16-step call, then
+; a complementary 16-step response) with rests, updated every 8 frames
+; (~8.75 Hz at VGA 70 Hz). A 0 entry in `notes` is a rest: the channel is
+; keyed off rather than retriggered, so the pattern has actual rhythm
+; instead of one continuous drone. Transposed by show act (cur_scene/8, the
+; same shared value main: already computed) by adding 0x400 per step to
+; the packed note value -- block occupies bits 10-12, so this is exactly
+; one octave up each time, regardless of the starting note.
 music_tick:
     ; Two frames before each new step, key off briefly: a short, clean
     ; silence before the next retrigger reads as a real note attack
@@ -1546,8 +1645,9 @@ music_tick:
     and ax,7
     cmp ax,6
     jne .checkbeat
+    mov cl,0
     call opl_note_off
-    ret
+    jmp bass_tick
 .checkbeat:
     mov ax,bp
     test al,7
@@ -1559,20 +1659,133 @@ music_tick:
     mov ax,[notes+si]
     cmp ax,0
     jne .has_note
+    mov cl,0
     call opl_note_off          ; rest: silence until the next audible step
     jmp .done
 .has_note:
-    mov cl,[cur_scene]
-    shr cl,3                   ; 0..2: which third of the show we're in
-    cmp cl,2
+    mov dl,[cur_scene]
+    shr dl,3                   ; 0..2: which third of the show we're in
+    cmp dl,2
     jbe .shiftok
-    mov cl,2
+    mov dl,2
 .shiftok:
-    xor ch,ch
-    shl cx,10                  ; each unit = 0x400 = one octave up (block
-    add ax,cx                  ; lives in bits 10-12 of the packed value)
+    xor dh,dh
+    mov bx,dx
+    shl bx,10                  ; each unit = 0x400 = one octave up (block
+    add ax,bx                  ; lives in bits 10-12 of the packed value)
+    mov cl,0
     call opl_note_on
-.done: ret
+.done:
+    jmp bass_tick
+
+; BASS (channel 1): a sparser 32-step pattern in the low register, mostly
+; root notes with rests, pulsing under the lead. Shares the same 0x400-per-
+; act transposition as the lead so it stays harmonically locked to it.
+bass_tick:
+    mov ax,bp
+    and ax,7
+    cmp ax,6
+    jne .checkbeat
+    mov cl,1
+    call opl_note_off
+    jmp pad_tick
+.checkbeat:
+    mov ax,bp
+    test al,7
+    jnz .done
+    shr ax,3
+    and ax,31
+    shl ax,1
+    mov si,ax
+    mov ax,[bass_notes+si]
+    cmp ax,0
+    jne .has_note
+    mov cl,1
+    call opl_note_off
+    jmp .done
+.has_note:
+    mov dl,[cur_scene]
+    shr dl,3
+    cmp dl,2
+    jbe .shiftok
+    mov dl,2
+.shiftok:
+    xor dh,dh
+    mov bx,dx
+    shl bx,10
+    add ax,bx
+    mov cl,1
+    call opl_note_on
+.done:
+    jmp pad_tick
+
+; PAD (channel 2): a slow sustained chord tone that only changes every 128
+; frames (4x per 512-frame scene), cycling through A-minor triad tones for
+; gentle harmonic movement under the lead/bass. No staccato mute here --
+; unlike the lead/bass it's meant to ring on legato, not re-attack cleanly.
+pad_tick:
+    mov ax,bp
+    and ax,127
+    jnz .pt_done
+    mov ax,bp
+    shr ax,7
+    and ax,3
+    shl ax,1
+    mov si,ax
+    mov ax,[pad_notes+si]
+    mov dl,[cur_scene]
+    shr dl,3
+    cmp dl,2
+    jbe .pt_shiftok
+    mov dl,2
+.pt_shiftok:
+    xor dh,dh
+    mov bx,dx
+    shl bx,10
+    add ax,bx
+    mov cl,2
+    call opl_note_on
+.pt_done:
+    jmp drum_tick
+
+; RHYTHM (OPL2 built-in bass drum + snare, borrowed from channels 6/7):
+; bass drum on the downbeat of every 8-step group (steps 0,8,16,24), snare
+; on the backbeat (steps 4,12,20,28) -- a simple, classic kick/snare
+; pattern locked to the same step grid as the lead. Each hit clears the
+; drum bits one tick early (same "brief silence before retrigger" idea
+; used elsewhere) so consecutive hits always see a real 0->1 edge.
+drum_tick:
+    mov ax,bp
+    and ax,7
+    cmp ax,6
+    jne .dt_beat
+    mov al,[opl_bd_base]
+    mov ah,0BDh
+    call opl_write
+    ret
+.dt_beat:
+    mov ax,bp
+    test al,7
+    jnz .dt_done
+    shr ax,3
+    and ax,31
+    and ax,7                   ; position within each 8-step group
+    mov al,[opl_bd_base]
+    cmp ax,0
+    je .dt_isbd
+    cmp ax,4
+    je .dt_issd
+    jmp .dt_write
+.dt_isbd:
+    or al,10h                  ; bass-drum key-on bit
+    jmp .dt_write
+.dt_issd:
+    or al,08h                  ; snare-drum key-on bit
+.dt_write:
+    mov ah,0BDh
+    call opl_write
+.dt_done:
+    ret
 
 ; A-minor pentatonic, OPL2 packed fnum/block for A3,C4,D4,E4,G4,A4,C5,D5,
 ; E5,G5 (0=rest). First 16 steps are the "call" phrase, last 16 a
@@ -1583,6 +1796,19 @@ notes dw 0x1244,0x12b2,0x1365,0,0x1306,0x12b2,0x1244,0
       dw 0x1205,0x1244,0x12b2,0x1306,0x1365,0,0x12b2,0x1605
       dw 0x1605,0x1365,0x1306,0,0x12b2,0x1306,0x1365,0
       dw 0x1205,0x1365,0x12b2,0x1244,0x1205,0,0x12b2,0x1244
+
+; Bass line: low-register root notes (A1,C2,D2,E2,G2; 0=rest), one entry
+; per lead step, same call/response shape as the lead but sparse -- mostly
+; rests, with the roots landing to outline the harmony rather than play
+; every step.
+bass_notes dw 0x644,0,0,0,0,0,0x644,0
+           dw 0xa05,0,0,0,0,0,0xa05,0
+           dw 0xa05,0,0,0,0,0,0xa05,0
+           dw 0x644,0,0,0,0,0,0x644,0
+
+; Pad chord tones (A4,C5,E5,C5 -- an A-minor triad with a brief return to
+; C5), one entry consumed every 128 frames.
+pad_notes dw 0x1244,0x12b2,0x1365,0x12b2
 old_mode db 3
 vga_page db 0                     ; which page we render into next
 show_page db 0                    ; which page present: just flipped to
@@ -1591,6 +1817,15 @@ pic_mask db 0
 cur_scene db 0                    ; scene index main: computed this frame,
                                    ; shared with scene_marker/music_tick so
                                    ; they can't drift out of sync with it
+
+; --- OPL2 instrument patches: [mod char,level,AD,SR,wave, car same x5,
+; feedback/connection] -- see opl_set_instrument ---
+opl_bd_base db 0                  ; baseline 0BDh value (rhythm on, no hit)
+inst_lead db 01h,12h,0F0h,77h,00h, 01h,00h,0F2h,77h,00h, 01h
+inst_bass db 01h,00h,0F0h,77h,00h, 01h,00h,0F2h,77h,01h, 01h
+inst_pad  db 21h,20h,43h,66h,00h, 21h,10h,33h,33h,00h, 00h
+inst_bd   db 01h,00h,0F0h,55h,00h, 01h,00h,0F0h,55h,00h, 00h
+inst_sd   db 0Dh,00h,0F0h,33h,02h, 0Dh,00h,0F0h,33h,02h, 00h
 
 ; --- bottom sine-wave text scroller state ---
 scrollpos dw 0
