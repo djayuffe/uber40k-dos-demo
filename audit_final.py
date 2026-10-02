@@ -18,7 +18,7 @@ required=[
 "opl_write:","opl_init:","opl_note_on:","opl_note_off:","mov dx,388h",
 "opl_set_instrument:","chan_op1 db","chan_op2 db","bass_tick:","pad_tick:",
 "drum_tick:","inst_lead db","inst_bass db","inst_pad","inst_bd","inst_sd",
-"mov ah,0BDh",
+"mov ah,0BDh","opl_silence:","echo_tick:","inst_echo db",
 ]
 for x in required:
     if x not in s: errors.append("missing: "+x)
@@ -44,6 +44,11 @@ for label in scenes:
             errors.append(label+" lacks canonical 320x200 bounds")
     if label != "scene_finale:" and "jmp overlay" not in body:
         errors.append(label+" does not jump to overlay (falls through into next scene / overruns the VGA page)")
+# the chip keeps sounding after exit unless every voice is keyed off
+if not re.search(r"^exit:\n\s+call opl_silence", s, re.M):
+    errors.append("exit: must call opl_silence first (else the OPL2 rings on after return to DOS)")
+if "call opl_silence" not in s.split("opl_init:")[1].split("ret")[0]:
+    errors.append("opl_init must start from a silenced chip")
 if "mov es,ax\n    xor di,di" not in s:
     errors.append("ES page-segment load missing at main:")
 if errors:

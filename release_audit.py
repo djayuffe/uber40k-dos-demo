@@ -6,7 +6,8 @@ s=(r/"showcase.asm").read_text()
 i=(r/"intro256.asm").read_text()
 errors=[]
 for f in ["showcase.asm","intro256.asm","build.sh","run-dosbox.sh","DOSBOX.CONF",
-          "README.md","TECHNICAL.md","FINAL_REVIEW.md","audit.py","audit_final.py"]:
+          "README.md","TECHNICAL.md","FINAL_REVIEW.md","audit.py","audit_final.py",
+          "tests/emu_test.py","tests/run_tests.sh"]:
     if not (r/f).exists(): errors.append("missing "+f)
 targets=["scene_plasma","scene_tunnel","scene_xor","scene_moire","scene_checker",
          "scene_ripples","scene_twister","scene_feedback","scene_copper","scene_diamond",
@@ -23,7 +24,7 @@ for x in ["call wait_vsync","call palette_tick","call music_tick",
           "and al,0F3h","vga_page db 0","show_page db 0","mov dx,3D4h","mov dx,3CEh",
           # OPL2 FM music (Sound Blaster / AdLib): lead/bass/pad + rhythm
           "opl_write:","opl_init:","opl_note_on:","opl_note_off:","mov dx,388h",
-          "opl_set_instrument:","bass_tick:","pad_tick:","drum_tick:"]:
+          "opl_set_instrument:","bass_tick:","pad_tick:","echo_tick:","drum_tick:","opl_silence:"]:
     if x not in s: errors.append("missing invariant "+x)
 if "org 100h" not in s.lower() or "bits 16" not in s.lower(): errors.append("showcase COM model")
 if "org 100h" not in i.lower() or "bits 16" not in i.lower(): errors.append("intro COM model")
@@ -37,6 +38,7 @@ print("  18 explicit scenes (16 fields + 3D cube/octahedron engine + 3D starfiel
 print("  bottom sine-wave text scroller")
 print("  own-block SETBLOCK shrink (code/data/stack)")
 print("  true VGA hardware double buffering (128K window + CRTC page flip)")
-print("  OPL2 FM music (Sound Blaster / AdLib, port 388h)")
+print("  OPL2 FM music: lead/bass/pad/echo + kick/snare/hat (port 388h)")
+print("  behavioural emulator tests present (tests/)")
 print("  palette, input, video and cleanup invariants")
 print("  strict intro build gate present")

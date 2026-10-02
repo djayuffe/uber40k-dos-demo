@@ -1,2 +1,4 @@
 *.COM
 SHA256SUMS
+.venv/
+__pycache__/

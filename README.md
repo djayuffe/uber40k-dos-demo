@@ -12,8 +12,8 @@ a 40,960-byte budget — it currently runs at roughly a tenth of that.
 
 | File | Purpose | Size | CPU | Video | Audio |
 |---|---|---|---|---|---|
-| `intro256.asm` | strict ≤256-byte sizecoded intro | 70 bytes | 386+ | VGA mode 13h | PC speaker (ESC detect only) |
-| `showcase.asm` | full multi-scene production demo | ~4.8 KB | 386+ | VGA mode 13h | OPL2 FM (Sound Blaster/AdLib) |
+| `intro256.asm` | strict ≤256-byte sizecoded intro | 70 bytes | 386+ | VGA mode 13h | none (silent) |
+| `showcase.asm` | full multi-scene production demo | ~5.0 KB | 386+ | VGA mode 13h | OPL2 FM (Sound Blaster/AdLib) |
 
 ## Quick start
 
@@ -119,7 +119,7 @@ all; this works identically on any SB card and on a plain AdLib. It uses the chi
 about as fully as a sizecoded driver reasonably can: three independent melodic
 voices plus the chip's built-in rhythm section, not one monophonic beep.
 
-**Three simultaneous FM voices**, each with its own instrument patch and its own
+**Four simultaneous FM voices**, each with its own instrument patch and its own
 step sequencer, all still perfectly phase-locked to the single global frame counter:
 - **Lead** (channel 0) — the original 32-step A-minor-pentatonic call-and-response
   phrase: a clean two-operator FM voice, fast attack, moderate decay.
@@ -127,31 +127,41 @@ step sequencer, all still perfectly phase-locked to the single global frame coun
   on the beat) with a punchier, more harmonically rich patch (full modulator depth,
   a half-sine carrier for extra bite), outlining the harmony under the lead.
 - **Pad** (channel 2) — a slow sustained chord tone (true-sustain envelope, soft
-  volume) that only changes every 128 frames, cycling through A-minor triad tones
-  for a gentle harmonic bed under the other two voices.
+  volume) that changes every 128 frames, cycling through A-minor triad tones. Each
+  change keys off then on again: re-keying a held note would only glide the pitch,
+  with no new swell.
+- **Echo** (channel 3) — the lead's note from two steps ago, replayed softer: a
+  tape-delay shimmer that turns one melody into a layered line. It stays in the
+  lead's octave on purpose (see "Transposition headroom" below).
 
 `opl_set_instrument` is a generic routine — channel number plus an 11-byte patch
 (operator characteristics, levels, envelopes, waveforms, feedback/connection) — so
-adding a fourth voice is a new patch and a new step table, not new driver code; the
+adding a voice is a new patch and a new step table, not new driver code; the
 channel-to-operator register mapping (`chan_op1`/`chan_op2`) is the standard OPL2
 layout, so it works for any of the chip's 9 channels. `opl_note_on`/`opl_note_off`
 take the channel number the same way.
 
 **Rhythm section**: `drum_tick` drives the OPL2's built-in percussion mode (register
-`0xBDh`, which repurposes channels 6-7's operators as dedicated drum voices) for a
-simple kick-and-snare pattern — bass drum on the downbeat of every 8-step group,
-snare on the backbeat — locked to the same step grid as the lead.
+`0xBDh`, which repurposes channels 6-7's operators as dedicated drum voices): bass
+drum on the downbeat of every 8-step group, snare on the backbeat, hi-hat on the
+off-beats — locked to the same step grid as the lead.
 
-All three melodic voices transpose across the show's three acts by **adding 0x400
+**Clean shutdown**: a real Sound Blaster/AdLib keeps sounding whatever was last keyed
+on after the program returns to DOS, so `opl_silence` keys off all 9 channels and
+clears the rhythm register at exit (and at init, in case a previous program left
+the chip in a state).
+
+**Transposition headroom**: the melodic voices transpose across the show's three acts by **adding 0x400
 to the packed note value per step** — block occupies bits 10-12 of that value, so
 this is always exactly one octave up regardless of the starting note, the same
 "transpose by a real musical interval, not an arbitrary offset" idea the earlier
 PC-speaker version used with PIT-divisor halving. Real rests (not a continuous
 drone) and a short silence before each retrigger give the lead and bass clean note
-attacks; the pad, being a sustained drone, retriggers legato instead.
+attacks. The packed note's block field is only 3 bits wide and the lead's highest
+note already sits at block 5, so two act transpositions reach the field's maximum
+(7) — which is why the echo can't also shift up an octave without overflowing.
 
-`intro256.asm` still only uses the PC speaker, and only as a side effect of reading
-the keyboard controller for Esc — it has no music of its own, deliberately: a
+`intro256.asm` is silent: no sound hardware is touched at all, deliberately — a
 256-byte sizecoded intro has no room for an FM driver and a note sequencer.
 
 ### Fixed vs. animated palette
@@ -250,6 +260,28 @@ These catch structural regressions fast, but **they are not a substitute for an
 actual build-and-run pass** — see below for what a real assemble-and-run turned up
 that pure static/text-level checks could not.
 
+## Testing
+
+Three layers, because each catches things the others can't:
+
+1. **Static audits** (`audit.py`, `audit_final.py`, `release_audit.py`, run by
+   `./build.sh`) — structure and invariants in the source text, including a narrow
+   lint for a 16-bit compare on `AX` straight after an 8-bit write to `AL`/`AH`.
+2. **Behavioural tests** (`tests/run_tests.sh`) — runs the *real, built* `.COM` files
+   in an emulated 16-bit CPU (Unicorn), trapping port I/O and DOS/BIOS interrupts, and
+   asserts on what the program actually does to the hardware: which OPL2 registers it
+   writes and when, that every one of the 18 scenes executes without leaving its page
+   or unbalancing the stack, that every note stays in an audible range at every
+   transposition level, and that both programs exit cleanly (IRQ1 restored, chip
+   silenced, stack balanced). ~2.5 minutes; needs Python 3 and installs `unicorn`
+   into a throwaway `./.venv`.
+3. **Live DOSBox** (`./run-dosbox.sh`) — the real target, for what the other two can't
+   judge: does it look right.
+
+The behavioural layer exists because the first two can't observe sound: a drum
+pattern that never fires, or a chip left ringing after exit, passes every static check
+and every screenshot.
+
 ## Files
 
 - `intro256.asm` — strict sizecoded intro source
@@ -258,6 +290,7 @@ that pure static/text-level checks could not.
 - `build.sh` — reproducible NASM build, audit run, and 256-byte gate enforcement
 - `run-dosbox.sh` — DOSBox launcher (showcase by default, `UBER256.COM` as `$1`)
 - `DOSBOX.CONF` — DOSBox configuration (vsync-correct `cycles=max`/`core=auto`)
+- `tests/` — behavioural emulator tests (`run_tests.sh`, `emu_test.py`)
 - `MANIFEST.sha256` — SHA-256 hashes of every source file
 - `TECHNICAL.md` — low-level implementation notes (COM loading, DAC, retrace, …)
 - `FINAL_REVIEW.md` — design/architecture review
@@ -343,3 +376,22 @@ exiting cleanly on Esc.
   scripts pass, a 15s headless run completes with no crash, and a live
   DOSBox run confirmed the rest of the demo (rendering, both 3D objects,
   scroller) is unaffected by the heavier register/channel usage.
+- **Second audit pass: the music was broken in ways nothing could see.** Behavioural
+  testing (above) found two real bugs in the multi-voice music I had just written and
+  described as working — my earlier checks were audits, screenshots and no-crash runs,
+  none of which can observe sound:
+  - **The drums never fired.** `drum_tick` loaded the baseline into `AL`
+    (`mov al,[opl_bd_base]`) and then did `cmp ax,0`, so `AX` was `0020h` and neither
+    drum branch could ever match: 0 kick and 0 snare hits. Fixed by keeping the step
+    position in `BX`; the static lint now flags this exact pattern (and was checked
+    against the buggy commit to prove it would have caught it).
+  - **Exit left the chip ringing.** `exit:` called `opl_note_off` with an undefined
+    `CL`, silencing an arbitrary channel; the pad was still keyed on after return to
+    DOS (and on real hardware would have droned indefinitely). Fixed with
+    `opl_silence`.
+  - The echo voice added in the same pass initially replayed a note the lead had
+    never played (the tick runs after `inc bp`, so lead step 0 is skipped once); the
+    test caught it and echoing now starts at frame 24.
+  - Expanded in the same pass: a fourth voice (echo), hi-hat on the off-beats, and a
+    pad that re-keys on each chord change. The intro (`UBER256.COM`), which had never
+    had any behavioural test, is now covered too.

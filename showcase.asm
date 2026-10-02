@@ -733,7 +733,7 @@ present:
     jnc main
 
 exit:
-    call opl_note_off
+    call opl_silence
     mov al,[pic_mask]
     out 21h,al                    ; restore BIOS IRQ1 keyboard servicing
     xor ah,ah
@@ -1537,12 +1537,33 @@ opl_set_instrument:
     pop ax
     ret
 
-; One-time setup: three independent melodic voices (lead/bass/pad, channels
+; Key every channel off and clear the whole rhythm register. Used at init
+; (the chip may still hold a previous program's notes) and at exit: a real
+; Sound Blaster/AdLib keeps sounding whatever was last keyed on after we
+; return to DOS, so leaving a voice on is audible long after the demo ends.
+opl_silence:
+    push ax
+    push cx
+    xor cl,cl
+.os_loop:
+    call opl_note_off
+    inc cl
+    cmp cl,9
+    jb .os_loop
+    mov ah,0BDh
+    xor al,al
+    call opl_write
+    pop cx
+    pop ax
+    ret
+
+; One-time setup: four independent melodic voices (lead/bass/pad, channels
 ; 0-2) plus the chip's built-in rhythm section (bass drum + snare, borrowed
 ; from channels 6-7) -- a real small arrangement instead of one monophonic
 ; beep, using as much of what the OPL2 actually offers as this driver
 ; reasonably can.
 opl_init:
+    call opl_silence
     mov ah,01h
     mov al,20h                    ; enable waveform select (registers 0..3)
     call opl_write
@@ -1555,6 +1576,9 @@ opl_init:
     call opl_set_instrument
     mov cl,2
     mov si,inst_pad
+    call opl_set_instrument
+    mov cl,3
+    mov si,inst_echo
     call opl_set_instrument
     mov cl,6
     mov si,inst_bd
@@ -1744,8 +1768,57 @@ pad_tick:
     shl bx,10
     add ax,bx
     mov cl,2
-    call opl_note_on
+    call opl_note_off          ; key off first: re-keying a held note would
+    call opl_note_on           ; just glide, with no new attack/swell
 .pt_done:
+    jmp echo_tick
+
+; ECHO (channel 3): the lead's note from two steps ago, replayed softer --
+; a classic tape-delay shimmer that turns one melody into a layered line.
+; Same octave as the lead on purpose: the packed note's 3-bit block field
+; tops out at 7, and the lead's highest note (block 5) plus two act
+; transpositions already reaches it, so shifting the echo up would overflow.
+echo_tick:
+    mov ax,bp
+    and ax,7
+    cmp ax,6
+    jne .et_beat
+    mov cl,3
+    call opl_note_off
+    jmp drum_tick
+.et_beat:
+    mov ax,bp
+    test al,7
+    jnz .et_done
+    cmp ax,24                  ; nothing to echo until the lead has played it:
+    jb .et_rest                ; its first note is at frame 8 (the tick runs
+                               ; after inc bp, so step 0 is skipped once)
+    shr ax,3
+    sub ax,2                   ; two steps behind the lead
+    and ax,31
+    shl ax,1
+    mov si,ax
+    mov ax,[notes+si]
+    cmp ax,0
+    jne .et_has
+.et_rest:
+    mov cl,3
+    call opl_note_off
+    jmp .et_done
+.et_has:
+    mov dl,[cur_scene]
+    shr dl,3
+    cmp dl,2
+    jbe .et_shift
+    mov dl,2
+.et_shift:
+    xor dh,dh
+    mov bx,dx
+    shl bx,10
+    add ax,bx
+    mov cl,3
+    call opl_note_on
+.et_done:
     jmp drum_tick
 
 ; RHYTHM (OPL2 built-in bass drum + snare, borrowed from channels 6/7):
@@ -1768,19 +1841,26 @@ drum_tick:
     test al,7
     jnz .dt_done
     shr ax,3
-    and ax,31
     and ax,7                   ; position within each 8-step group
-    mov al,[opl_bd_base]
-    cmp ax,0
-    je .dt_isbd
-    cmp ax,4
+    mov bx,ax                  ; keep it out of AX: loading the baseline into
+    mov al,[opl_bd_base]       ; AL below would otherwise clobber the compare
+    cmp bx,0                   ; (this used to test AX after overwriting AL, so
+    je .dt_isbd                ; neither drum ever fired)
+    cmp bx,4
     je .dt_issd
+    cmp bx,2
+    je .dt_ishh
+    cmp bx,6
+    je .dt_ishh
     jmp .dt_write
 .dt_isbd:
     or al,10h                  ; bass-drum key-on bit
     jmp .dt_write
 .dt_issd:
     or al,08h                  ; snare-drum key-on bit
+    jmp .dt_write
+.dt_ishh:
+    or al,01h                  ; hi-hat key-on bit (the off-beats)
 .dt_write:
     mov ah,0BDh
     call opl_write
@@ -1823,6 +1903,7 @@ cur_scene db 0                    ; scene index main: computed this frame,
 opl_bd_base db 0                  ; baseline 0BDh value (rhythm on, no hit)
 inst_lead db 01h,12h,0F0h,77h,00h, 01h,00h,0F2h,77h,00h, 01h
 inst_bass db 01h,00h,0F0h,77h,00h, 01h,00h,0F2h,77h,01h, 01h
+inst_echo db 01h,20h,0F0h,77h,00h, 01h,14h,0F2h,77h,00h, 01h
 inst_pad  db 21h,20h,43h,66h,00h, 21h,10h,33h,33h,00h, 00h
 inst_bd   db 01h,00h,0F0h,55h,00h, 01h,00h,0F0h,55h,00h, 00h
 inst_sd   db 0Dh,00h,0F0h,33h,02h, 0Dh,00h,0F0h,33h,02h, 00h
