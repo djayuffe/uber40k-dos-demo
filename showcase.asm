@@ -1,5 +1,5 @@
 ; UBER DOS SHOWCASE 5.0 - polished procedural VGA demo
-; NASM syntax, DOS .COM, 386+, VGA, PC speaker. No external assets.
+; NASM syntax, DOS .COM, 386+, VGA, OPL2 FM. No external assets.
 BITS 16
 ORG 100h
 
@@ -74,7 +74,7 @@ main:
     mov es,ax
     xor di,di
     ; Scene index = (frame >> SCENE_SHIFT) mod SCENE_COUNT. SCENE_COUNT is not
-    ; a power of two (17 scenes), so this uses DIV instead of an AND mask;
+    ; a power of two (18 scenes), so this uses DIV instead of an AND mask;
     ; the remainder (DL) is cached in cur_scene so scene_marker and
     ; music_tick read the same value instead of recomputing it separately.
     mov ax,bp
@@ -514,10 +514,10 @@ scene_vortex:
     jb .vy
     jmp overlay
 
-; 16: rotating wireframe cube. The only non-full-screen-field scene: it
-; clears the backbuffer to a flat colour first, then projects and draws a
-; true 3D object (two-axis rotation, orthographic projection, Bresenham
-; line draw) instead of a per-pixel procedural texture.
+; 16: rotating wireframe cube + octahedron. The non-full-screen-field
+; scene: it clears the page to a flat colour first, then projects and
+; draws true 3D objects (two-axis rotation, perspective projection,
+; Bresenham line draw) instead of a per-pixel procedural texture.
 ; Two independent 3D objects sharing one engine (render_object): a cube and
 ; an octahedron, each spun by a different pair of angle rates and offset to
 ; opposite sides of the screen, so they visibly rotate differently rather
@@ -790,7 +790,7 @@ raster_line:
 
 
 ; Scene identity strip: SCENE_COUNT small blocks at the top, current scene
-; highlighted. Deliberately tiny: 17 blocks * 8x8 pixels ~= 1088 stores/frame.
+; highlighted. Deliberately tiny: 18 blocks * 8x8 pixels = 1152 stores/frame.
 scene_marker:
     push ax
     push bx

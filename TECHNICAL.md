@@ -27,18 +27,18 @@ The sources declare a 386+ target because the compact arithmetic uses later x86 
 
 ## Frame presentation accuracy
 
-`wait_vsync` waits for the beginning of vertical retrace and then starts the 64,000-byte backbuffer copy. This provides stable frame pacing and generally reduces visible tearing. It must not be described as mathematically tear-free on every historical VGA/CPU combination: the complete copy can outlast vertical blank on slower machines. True hardware page flipping would require a different VGA memory/layout strategy.
+`wait_vsync` waits for the beginning of vertical retrace before `present:` flips the CRTC start-address register to show the page that was just rendered. This is true hardware page flipping — no software backbuffer copy, no tearing. The CRTC update lands inside vertical blank, so the display switches pages at the moment the monitor is already in the non-visible region.
 
 Scene changes use a palette-domain fade envelope. The renderer therefore pays no second full-frame blend pass: DAC output is clamped toward black for 32 frames before/after each 512-frame boundary while the procedural effect clock remains continuous.
 
 
 ## Register-lifetime audit
 
-Rendering loads ES with the allocated backbuffer segment once at frame start. Individual effects may freely reuse AX/BX/CX/DX/SI because STOSB addresses ES:DI; BX is not a persistent framebuffer pointer. The presentation path reloads DS from `backseg` explicitly before `REP MOVSW`, then restores DS. Every scene uses a 320 x 200 loop and therefore emits exactly 64,000 STOSB writes before overlays.
+Rendering loads ES with the current hidden VGA page segment (A000h or B000h) once at frame start. Individual effects may freely reuse AX/BX/CX/DX/SI because STOSB addresses ES:DI; BX is not a persistent framebuffer pointer. Every full-screen scene uses a 320 x 200 loop and emits exactly 64,000 STOSB writes before overlays; scene_cube and scene_starfield clear the page with `rep stosw` and draw 3D objects instead.
 
 ## Presentation choreography
 
-Version 5.0 combines two transition mechanisms. `palette_tick` performs the inexpensive DAC-domain fade, while `transition_wipe` covers symmetric top/bottom scanline regions during the first and last 16 frames of each 512-frame scene. `scene_marker` renders seventeen tiny progress blocks directly into the backbuffer. `scroll_draw` runs last of the overlays, after `transition_wipe`, so the bottom scroller is never covered by the scene-cut shutter bars. All four overlays execute after the scene renderer and before the retrace/presentation path, so they cannot leave stale pixels between scenes.
+Version 5.0 combines two transition mechanisms. `palette_tick` performs the inexpensive DAC-domain fade, while `transition_wipe` covers symmetric top/bottom scanline regions during the first and last 16 frames of each 512-frame scene. `scene_marker` renders eighteen tiny progress blocks directly into the hidden page. `scroll_draw` runs last of the overlays, after `transition_wipe`, so the bottom scroller is never covered by the scene-cut shutter bars. All four overlays execute after the scene renderer and before the retrace/presentation path, so they cannot leave stale pixels between scenes.
 
 ## Perspective projection (scene_cube)
 
