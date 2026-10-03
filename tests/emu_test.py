@@ -34,6 +34,8 @@ class Machine:
         self.irq_writes, self.modes, self.sp_at_frame = [], [], []
         self.unmapped, self.exited, self.resized = [], False, False
         self.crtc_flip = flip_port_is_crtc
+        self.crtc_start = []          # (0x0C value, 0x0D value) per page flip
+        self.crtc_0c = self.crtc_0d = None
         com = pathlib.Path(com_name).read_bytes() if pathlib.Path(com_name).is_absolute() else (ROOT / com_name).read_bytes()
         uc = self.uc = Uc(UC_ARCH_X86, UC_MODE_16)
         uc.mem_map(0, 0x10000)
@@ -70,9 +72,14 @@ class Machine:
             self.opl[self.opl_index] = value
             self.opl_log.append((self.flips, self.opl_index, value))
         elif port == 0x3D4: self.crtc_index = value
-        elif port == 0x3D5 and self.crtc_index == 0x0D:
-            self.flips += 1
-            self.sp_at_frame.append(uc.reg_read(UC_X86_REG_SP))
+        elif port == 0x3D5:
+            if self.crtc_index == 0x0C: self.crtc_0c = value
+            elif self.crtc_index == 0x0D:
+                self.crtc_0d = value
+                if self.crtc_flip:
+                    self.flips += 1
+                    self.crtc_start.append((self.crtc_0c, self.crtc_0d))
+                    self.sp_at_frame.append(uc.reg_read(UC_X86_REG_SP))
         elif port == 0x21: self.irq_writes.append(value)
 
     def on_intr(self, uc, intno, ud):
@@ -111,6 +118,21 @@ def test_showcase(frames):
     check(0x13 in m.modes, "VGA mode 13h entered")
     check(len(set(m.sp_at_frame)) == 1,
           f"stack balanced at every frame end (SP values seen: {sorted(set(map(hex, m.sp_at_frame)))})")
+
+    # The page flip must alternate the CRTC start address between page 0
+    # (A000h, offset 0 -> 0x0C=00, 0x0D=00) and page 1 (B000h, offset
+    # 65536 -> 16384 chain-4 units = 0x4000 -> 0x0C=00, 0x0D=40). A swap of
+    # the low/high bytes (0x0C=40, 0x0D=00) puts page 1 at byte 256, off by
+    # one screen, and never shows the rendered frame: this is the check that
+    # would have caught that exact bug.
+    if len(m.crtc_start) >= 2:
+        first, second = m.crtc_start[0], m.crtc_start[1]
+        check(first == (0x00, 0x00),
+              f"first flip shows page 0 (CRTC 0x0C/0x0D = {first}, want (0x00, 0x00))")
+        check(second == (0x00, 0x40),
+              f"second flip shows page 1 (CRTC 0x0C/0x0D = {second}, want (0x00, 0x40))")
+        ok = all(s in ((0x00, 0x00), (0x00, 0x40)) for s in m.crtc_start)
+        check(ok, f"every flip uses a valid page start address {sorted(set(m.crtc_start))[:4]}")
 
     for ch, (a, b) in {0: (0, 3), 1: (1, 4), 2: (2, 5), 3: (8, 11), 6: (16, 19), 7: (17, 20)}.items():
         check(all((0x20 + o) in opl for o in (a, b)) and (0xC0 + ch) in opl,

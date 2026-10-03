@@ -19,16 +19,17 @@ ORG 100h
 
 start:
     ; A .COM program owns ALL free conventional memory at launch (its PSP
-    ; block spans to the top of the DOS arena). Without shrinking that block
-    ; first, the later 64,000-byte AH=48h allocation below always fails with
-    ; "insufficient memory", since DOS has nothing left to give out.
+    ; block spans to the top of the DOS arena). This demo renders into video
+    ; RAM directly (true page flip, see below) and needs no DOS backbuffer,
+    ; but it does keep a small local stack and its code/data tables in
+    ; conventional memory. Shrinking the PSP block to 8 KiB gives a clean,
+    ; bounded footprint and keeps the local stack (stack_top) well inside a
+    ; known region rather than floating somewhere in the default 64 KiB.
     mov ax,cs
     mov es,ax
     mov bx,512                    ; 512 paragraphs = 8192 bytes: comfortably
     mov ah,4Ah                    ; covers code+data+stack (font, scroller,
-    int 21h                       ; cube tables) with room to spare. SETBLOCK
-                                   ; shrinks our own memory block so the AH=48h
-                                   ; call below has free memory to allocate from.
+    int 21h                       ; cube tables) with room to spare.
     mov ax,cs
     mov ss,ax
     mov sp,stack_top              ; switch onto our own stack inside that block
@@ -719,13 +720,13 @@ present:
     mov al,0Ch
     out dx,al
     inc dx
-    mov al,bh
+    mov al,bl                     ; 0Ch = START_ADDRESS_LOW -> low byte (bl)
     out dx,al
     dec dx
     mov al,0Dh
     out dx,al
     inc dx
-    mov al,bl
+    mov al,bh                     ; 0Dh = START_ADDRESS_HIGH -> high byte (bh)
     out dx,al
     inc bp
     call music_tick
@@ -895,6 +896,29 @@ wait_vsync:
 
 ; Palette morphing: scene number changes channel relationships, frame changes phase.
 palette_tick:
+    ; Global fade-in from black over the first 48 frames of the show (a
+    ; demoscene production eases up out of the DOS text mode rather than
+    ; slamming to full brightness on frame zero). For frame < 48 the whole
+    ; animated palette is scaled down by (48-frame)/48, so every colour --
+    ; including the reserved UI indices written after the loop -- dims in
+    ; together. After frame 48 the normal scene-local envelope takes over.
+    mov ax,bp
+    cmp ax,48
+    jb .global_fade
+    jmp .scene_envelope
+.global_fade:
+    mov bx,48
+    sub bx,ax                      ; bx = 48-frame (fade amount, 48..1)
+    mov al,ax                      ; ax = frame (0..47)
+    mov ah,0
+    ; limit = 63 * frame / 48  (linear ramp 0 -> ~63)
+    mov bx,63
+    mul bx                         ; dx:ax = frame * 63
+    mov bx,48
+    div bx                         ; ax = frame*63/48
+    mov [pal_limit],al
+    jmp .pal_begin
+.scene_envelope:
     ; Scene-local triangular brightness envelope.  The first/last 32 frames
     ; fade through black, hiding the hard procedural scene switch cheaply.
     mov ax,bp
@@ -1325,94 +1349,159 @@ render_object:
 ; General-purpose Bresenham line draw between (line_x0,line_y0) and
 ; (line_x1,line_y1) in line_color, with per-pixel bounds checks so an
 ; out-of-range projected point can never write outside the backbuffer.
+;
+; Canonical "long-axis-first" form (Zingl 2000): the axis with the larger
+; absolute delta steps every iteration and the smaller axis steps when the
+; error accumulator e (initialised to 2*|short| - |long|) is >= 0. The long
+; axis monotonically reaches its endpoint, so the walk always terminates
+; exactly on (x1,y1) -- horizontal, vertical and steep lines included.
+;
+; The previous version seeded err = |dx| - |dy| and tested 2*err<dy / >dx,
+; which for dx=0 (vertical) or steep lines left the walker stuck on the
+; start pixel forever (e2 stayed pinned and neither step condition could
+; fire). That was a genuine latent infinite loop; this form cannot hang.
 draw_line:
     pusha
+    ; Signed deltas and their absolute magnitudes.
     mov ax,[line_x1]
     sub ax,[line_x0]
-    mov word [line_sx],1
-    cmp ax,0
-    jge .no_negx
-    neg ax
-    mov word [line_sx],-1
-.no_negx:
     mov [line_dx],ax
-
+    mov bx,ax
+    mov ax,bx
+    test ax,ax
+    jns .dl_adx
+    neg ax
+.dl_adx:
+    mov [line_adx],ax               ; ax = |dx|
     mov ax,[line_y1]
     sub ax,[line_y0]
+    mov [line_dy],ax
+    mov bx,ax
+    test bx,bx
+    jns .dl_ady
+    neg ax
+.dl_ady:
+    mov [line_ady],ax               ; ax = |dy|
+    ; Step signs (+1/-1).
+    mov word [line_sx],1
     mov word [line_sy],1
-    cmp ax,0
-    jge .no_negy
-    neg ax
-    mov word [line_sy],-1
-.no_negy:
-    neg ax
-    mov [line_dy],ax                ; -abs(y1-y0)
-
     mov ax,[line_dx]
-    add ax,[line_dy]
+    js .dl_nx
+    jmp .dl_nxdone
+.dl_nx:
+    mov word [line_sx],-1
+.dl_nxdone:
+    mov ax,[line_dy]
+    js .dl_ny
+    jmp .dl_nydone
+.dl_ny:
+    mov word [line_sy],-1
+.dl_nydone:
+    ; e = 2*|short| - |long|  (scale x2 so the "e >= 0" test needs no divide).
+    mov ax,[line_adx]
+    mov bx,[line_ady]
+    cmp bx,ax                       ; is |dy| > |dx| ?
+    jg .dl_steep
+    ; not steep: long=|dx|, short=|dy| -> e = 2*|dy| - |dx|
+    shl bx,1
+    sub bx,ax
+    mov [line_err],bx
+    jmp .dl_init
+.dl_steep:
+    ; steep: long=|dy|, short=|dx| -> e = 2*|dx| - |dy|
+    shl ax,1
+    sub ax,bx
     mov [line_err],ax
-
-    mov ax,[line_x0]
-    mov [line_cx],ax
-    mov ax,[line_y0]
-    mov [line_cy],ax
-.loop:
+.dl_init:
+    mov [line_cx],[line_x0]
+    mov [line_cy],[line_y0]
+.dl_loop:
+    ; Plot the current pixel if in bounds.
     mov ax,[line_cy]
     cmp ax,0
-    jl .noplot
+    jl .dl_noplot
     cmp ax,199
-    jg .noplot
+    jg .dl_noplot
     mov bx,[line_cx]
     cmp bx,0
-    jl .noplot
+    jl .dl_noplot
     cmp bx,319
-    jg .noplot
+    jg .dl_noplot
     mov cx,320
     mul cx
     add ax,bx
     mov di,ax
     mov al,[line_color]
     stosb
-.noplot:
+.dl_noplot:
+    ; Terminate exactly on the endpoint.
     mov ax,[line_cx]
     cmp ax,[line_x1]
-    jne .step
+    jne .dl_step
     mov ax,[line_cy]
     cmp ax,[line_y1]
-    jne .step
-    jmp .done
-.step:
-    ; e2 must be computed ONCE from err and reused for BOTH the x-step and
-    ; y-step conditions (the standard Zingl dx+dy algorithm). This used to
-    ; recompute e2 from [line_err] a second time for the y-step check --
-    ; after the x-step above may have already mutated line_err -- which
-    ; could stop the walk from ever landing exactly on (x1,y1), the only
-    ; condition .loop checks to terminate: a genuine infinite loop. bx
-    ; holds e2 here and is never touched by the x-step block below, so it
-    ; stays correct for the y-step's comparison too.
+    jne .dl_step
+    jmp .dl_done
+.dl_step:
     mov ax,[line_err]
-    mov bx,ax
-    shl bx,1                       ; bx = e2 = 2*err, computed once
-    cmp bx,[line_dy]
-    jl .skipx
-    mov ax,[line_err]
-    add ax,[line_dy]
+    cmp ax,0
+    jge .dl_sec                      ; e >= 0: also step the short axis
+    ; -- long axis only --
+    cmp [line_ady],[line_adx]
+    jg .dl_longy
+    add [line_cx],[line_sx]          ; not steep: x is long
+    jmp .dl_adv
+.dl_longy:
+    add [line_cy],[line_sy]          ; steep: y is long
+    jmp .dl_adv
+.dl_sec:
+    ; -- long axis AND short axis --
+    sub ax,[line_ady]                ; provisional for not-steep err update
+    cmp [line_ady],[line_adx]
+    jg .dl_sec_longy
+    ; not steep: long=x (always), short=y (since e>=0)
+    add [line_cx],[line_sx]
+    add [line_cy],[line_sy]
+    ; err = e - 2*|long| + 2*|short| = e - 2*|dx| + 2*|dy|
+    mov bx,[line_adx]
+    shl bx,1
+    sub ax,bx
+    mov bx,[line_ady]
+    shl bx,1
+    add ax,bx
     mov [line_err],ax
-    mov ax,[line_cx]
-    add ax,[line_sx]
-    mov [line_cx],ax
-.skipx:
-    cmp bx,[line_dx]               ; reuse the SAME e2 computed above
-    jg .skipy
-    mov ax,[line_err]
-    add ax,[line_dx]
+    jmp .dl_loop
+.dl_sec_longy:
+    ; steep: long=y (always), short=x (since e>=0)
+    add [line_cy],[line_sy]
+    add [line_cx],[line_sx]
+    ; err = e - 2*|dy| + 2*|dx|
+    mov bx,[line_ady]
+    shl bx,1
+    sub ax,bx
+    mov bx,[line_adx]
+    shl bx,1
+    add ax,bx
     mov [line_err],ax
-    mov ax,[line_cy]
-    add ax,[line_sy]
-    mov [line_cy],ax
-.skipy:
-    jmp .loop
-.done:
+    jmp .dl_loop
+.dl_adv:
+    ; long axis only: err = e + 2*|short|
+    cmp [line_ady],[line_adx]
+    jg .dl_adv_longy
+    mov ax,[line_err]
+    mov bx,[line_ady]
+    shl bx,1
+    add ax,bx
+    mov [line_err],ax
+    jmp .dl_loop
+.dl_adv_longy:
+    mov ax,[line_err]
+    mov bx,[line_adx]
+    shl bx,1
+    add ax,bx
+    mov [line_err],ax
+    jmp .dl_loop
+.dl_done:
     popa
     ret
 
@@ -1985,6 +2074,8 @@ line_cx dw 0
 line_cy dw 0
 line_dx dw 0
 line_dy dw 0
+line_adx dw 0                   ; |dx| (absolute), for the Zingl error accumulator
+line_ady dw 0                   ; |dy| (absolute)
 line_sx dw 0
 line_sy dw 0
 line_err dw 0
