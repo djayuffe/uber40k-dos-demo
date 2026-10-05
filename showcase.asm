@@ -34,7 +34,7 @@ start:
     ; instead of floating somewhere in the default 64 KiB.
     mov ax,cs
     mov es,ax
-    mov bx,1024                   ; 1024 paragraphs = 16 KiB: comfortably
+    mov bx,4096                   ; 4096 paragraphs = 64 KiB: image + stack + the polar maps
     mov ah,4Ah                    ; covers code+data+stack (font, scroller,
     int 21h                       ; cube tables) with room to spare.
     mov ax,cs
@@ -66,6 +66,8 @@ start:
     mov [pic_mask],al
     or al,2                       ; mask IRQ1 so BIOS int 9 cannot race
     out 21h,al                    ; our own port-60h/64h polling for Esc
+    call build_tabs
+    call build_maps
     xor bp,bp
     call palette_tick
     call opl_init
@@ -130,80 +132,186 @@ main:
     jmp scene_finale
 
 ; ---------------------------------------------------------------------------
-; Field scenes 1-15 and 18. Every one is the same loop (FIELD): a per-frame
-; prelude, then for each of the 320x200 pixels a routine that returns a signed
-; value -381..381 in AX, which is mapped onto palette indices 42..255 (the part
-; of the DAC that palette_tick animates, so the colours also flow over time).
-; The routines are sums of sines from the shared sine table: smooth by
-; construction, instead of the XOR/shift recurrences they used to be.
-; Pixel routine contract: in CX=x, DX=y; out AX; may clobber BX, SI; must keep
-; CX, DX, DI.
+; Field scenes 1-15 and 18: the "hyper-optimised" renderer.
+;
+; The old fields evaluated a sum of sines for every one of 64,000 pixels
+; (2-3 million instructions a frame: far beyond what a 486 can do in one 70 Hz
+; frame). Three tricks bring that down to about 200k:
+;   * HALF RESOLUTION (optical hack): every value is computed once per 2x2
+;     block (160x100) and written as a doubled word to two rows. The fields are
+;     smooth, so the eye sees no difference, and the palette flows underneath.
+;   * LOOKUP TABLES instead of maths: a pixel is a few table reads and adds.
+;     sin56/sin165 are built once from the sine table; the per-frame tables
+;     (ta_tab, tr_tab) are 256 entries each.
+;   * PRECOMPUTED POLAR MAPS: the angle and radius of every block (ang_map,
+;     rad_map) are computed once at start, so tunnels, rings and spirals are
+;     just  TA[angle] + TR[radius]  with no atan/sqrt per frame.
+; Three pixel loops cover every scene:
+;   fieldW  two linear waves + a row wave   (plasma, lattices, bars, grids)
+;   fieldM  TA[angle] + TR[radius]          (tunnel, moire, ripples, orbs)
+;   fieldS  sin(TA[angle] + TR[radius])     (spirals)
+; Values always land in palette indices 42..255, the part of the DAC that
+; palette_tick animates, so the colours flow over time.
 ; ---------------------------------------------------------------------------
-%macro FIELD 2
-    call %1
-    xor dx,dx
-%%py: xor cx,cx
-%%px:
-    call %2
-    add ax,384
-    imul ax,7
-    sar ax,5
-    add ax,FIXED_PAL_COUNT+1
-    stosb
-    inc cx
-    cmp cx,320
-    jb %%px
-    inc dx
-    cmp dx,200
-    jb %%py
-    jmp overlay
+%macro WSET 8                     ; x-step/y-step/speed of wave 1 and 2, y-step/speed of the row wave
+    mov word [w_st1],%1
+    mov word [w_ry1],%2
+    mov ax,bp
+    imul ax,%3
+    mov [w_p1],ax
+    mov word [w_st2],%4
+    mov word [w_ry2],%5
+    mov ax,bp
+    imul ax,%6
+    mov [w_p2],ax
+    mov word [w_ry3],%7
+    mov ax,bp
+    imul ax,%8
+    mov [w_p3],ax
+%endmacro
+%macro TABLIN 4                   ; table[i] = src[(BL + i*step)&255] + add
+    mov si,%1
+    mov di,%2
+    mov dl,%3
+    mov dh,%4
+    call tab_lin
 %endmacro
 
-; 1: sine plasma (column + row + diagonal wave)
+; 1: plasma
 scene_plasma:
-    FIELD pre_none, px_plasma
-; 2: tunnel rings with a hyperbolic twist
+    WSET 900,1400,0200h, -700,1100,-0180h, 900,0100h
+    call fieldW
+    jmp overlay
+; 2: tunnel: angle stripes x true 1/r depth rings
 scene_tunnel:
-    FIELD pre_none, px_tunnel
-; 3: hyperbolic x*y bands crossed with a column wave
+    mov ax,bp
+    add ax,ax
+    mov bl,al
+    TABLIN sin56,ta_tab,3,0
+    call tab_depth
+    call fieldM
+    jmp overlay
+; 3: orbs: two crossing wave families in polar space
 scene_xor:
-    FIELD pre_none, px_hyper
-; 4: moire: two ring families on orbiting centres
+    mov ax,bp
+    mov bx,ax
+    add ax,ax
+    add ax,bx
+    mov bl,al
+    TABLIN sin56,ta_tab,2,0
+    mov ax,bp
+    shl ax,2
+    neg ax
+    mov bl,al
+    TABLIN sin56,tr_tab,3,42
+    call fieldM
+    jmp overlay
+; 4: moire: fine rays against moving rings
 scene_moire:
-    FIELD pre_moire, px_rings
-; 5: soft rotating checker (product of two sines)
+    mov bx,bp
+    TABLIN sin56,ta_tab,8,0
+    mov ax,bp
+    shl ax,2
+    neg ax
+    mov bl,al
+    TABLIN sin56,tr_tab,3,42
+    call fieldM
+    jmp overlay
+; 5: soft checker (egg-crate)
 scene_checker:
-    FIELD pre_none, px_softcheck
-; 6: dual-source ripples
+    WSET 820,0,0180h, 0,1310,-0200h, 0,0
+    call fieldW
+    jmp overlay
+; 6: ripples: pure rings travelling outwards
 scene_ripples:
-    FIELD pre_ripple, px_rings
-; 7: twisting ribbons
+    xor bl,bl
+    TABLIN sin56,ta_tab,0,0
+    mov ax,bp
+    shl ax,3
+    neg ax
+    mov bl,al
+    TABLIN sin56,tr_tab,5,42
+    call fieldM
+    jmp overlay
+; 7: ribbons
 scene_twister:
-    FIELD pre_none, px_ribbons
-; 8: domain-warped plasma
+    WSET 1640,80,0300h, -980,-60,0200h, 200,0100h
+    call fieldW
+    jmp overlay
+; 8: interference of three moving waves
 scene_feedback:
-    FIELD pre_none, px_warpfield
-; 9: copper bands
+    WSET 1100,-900,0280h, 700,1500,-0300h, 900,0200h
+    call fieldW
+    jmp overlay
+; 9: copper bars
 scene_copper:
-    FIELD pre_none, px_copper
-; 10: expanding diamond rings
+    WSET 60,2620,0500h, -100,1700,0380h, 3300,-0400h
+    call fieldW
+    jmp overlay
+; 10: diamonds
 scene_diamond:
-    FIELD pre_none, px_diamond
-; 11: interference lattice
+    WSET 820,1310,0300h, 820,-1310,-0300h, 0,0
+    call fieldW
+    jmp overlay
+; 11: fine diagonal lattice
 scene_lattice:
-    FIELD pre_none, px_lattice
-; 12: horizontal warp bands
+    WSET 1640,2620,0200h, 1640,-2620,-0200h, 0,0
+    call fieldW
+    jmp overlay
+; 12: wavy bands
 scene_warp:
-    FIELD pre_none, px_wavy
+    WSET 300,1800,0400h, -200,-1400,0300h, 1100,0200h
+    call fieldW
+    jmp overlay
 ; 13: scanwave
 scene_scanwave:
-    FIELD pre_none, px_scanwave
-; 14: rotating grid
+    WSET 410,3930,0600h, -205,1300,-0300h, 2600,0500h
+    call fieldW
+    jmp overlay
+; 14: rotating grid: the two wave directions turn with the frame clock
 scene_bitplane:
-    FIELD pre_none, px_rotgrid
-; 15: spiral vortex
+    mov bx,bp
+    shr bx,1
+    push bx
+    add bx,64
+    and bx,255
+    movsx ax,byte [sintab+bx]     ; cos
+    mov si,ax
+    pop bx
+    and bx,255
+    movsx ax,byte [sintab+bx]     ; sin
+    mov bx,si
+    imul bx,6
+    mov [w_st1],bx
+    mov bx,ax
+    imul bx,10
+    mov [w_ry1],bx
+    mov bx,ax
+    imul bx,-6
+    mov [w_st2],bx
+    mov bx,si
+    imul bx,10
+    mov [w_ry2],bx
+    mov ax,bp
+    imul ax,0200h
+    mov [w_p1],ax
+    mov word [w_p2],0
+    mov word [w_ry3],0
+    mov word [w_p3],0
+    call fieldW
+    jmp overlay
+; 15: vortex: three spiral arms
 scene_vortex:
-    FIELD pre_none, px_spiral
+    mov ax,bp
+    add ax,ax
+    mov bl,al
+    TABLIN ident,ta_tab,3,0
+    mov ax,bp
+    shl ax,2
+    mov bl,al
+    TABLIN ident,tr_tab,3,0
+    call fieldS
+    jmp overlay
 
 ; 16: rotating wireframe cube. The only non-full-screen-field scene: it
 ; clears the backbuffer to a flat colour first, then projects and draws a
@@ -295,9 +403,21 @@ scene_starfield:
     call star_pass
     jmp overlay
 
-; 18: finale: rings wobbled by a column wave, plus column and row waves
+; 18: finale: a fast two-armed spiral
 scene_finale:
-    FIELD pre_none, px_finale
+    mov bx,bp
+    neg bx
+    TABLIN ident,ta_tab,2,0
+    mov ax,bp
+    mov bx,ax
+    add ax,ax
+    add ax,bx
+    add ax,ax
+    neg ax
+    mov bl,al
+    TABLIN ident,tr_tab,5,0
+    call fieldS
+    jmp overlay
 
 
 overlay:
@@ -522,455 +642,268 @@ transition_wipe:
     pop ax
     ret
 
-; ===== field-scene helpers =====
-%macro SINTO 1                    ; %1 = sin(BX), BX masked to 0..255
-    and bx,255
-    movsx %1,byte [sintab+bx]
-%endmacro
+; ===== field-scene engine (see the comment above the scene block) =====
 
-pre_none:
+; table[i] = src[(BL + i*DL)&255] + DH   (SI = source, DI = destination)
+tab_lin:
+    xor bh,bh
+    mov cx,256
+.tl:
+    mov al,[si+bx]
+    add al,dh
+    mov [di],al
+    inc di
+    add bl,dl
+    dec cx
+    jnz .tl
     ret
 
-; Octagonal distance max+min/2 (within ~8% of a circle): AX=dx, BX=dy (signed)
-; -> AX. Clobbers BX, SI.
-odist:
-    mov si,ax
-    sar si,15
-    xor ax,si
-    sub ax,si
-    mov si,bx
-    sar si,15
-    xor bx,si
-    sub bx,si
-    cmp ax,bx
-    jge .od
-    xchg ax,bx
-.od:
-    shr bx,1
-    add ax,bx
+; tr_tab[r] = sin56[2600/(r+10) - 4*frame] + 42: a true perspective depth
+; (1/r), which is what makes the tunnel look like a tunnel.
+tab_depth:
+    xor si,si
+.td:
+    mov bx,si
+    add bx,10
+    mov ax,2600
+    xor dx,dx
+    div bx
+    mov dx,bp
+    shl dx,2
+    sub ax,dx
+    mov bl,al
+    xor bh,bh
+    mov al,[sin56+bx]
+    add al,42
+    mov [tr_tab+si],al
+    inc si
+    cmp si,256
+    jb .td
     ret
 
-px_plasma:
-    mov bx,dx
-    shl bx,1
-    add bx,dx                     ; 3*y
-    mov ax,bp
-    shl ax,1
-    add bx,ax
-    SINTO ax                      ; row wave
-    mov bx,cx
-    shl bx,1
-    add bx,bp
-    SINTO si                      ; column wave
-    add ax,si
-    mov bx,cx
-    add bx,dx
-    add bx,bp
-    SINTO si                      ; diagonal wave
-    add ax,si
+; fieldW: value = sin56[wave1] + sin56[wave2] + row term, where the wave
+; phases advance by [w_st1]/[w_st2] (8.8) per block and by [w_ry*] per row.
+fieldW:
+    mov ax,[w_p1]
+    mov [wr1],ax
+    mov ax,[w_p2]
+    mov [wr2],ax
+    mov ax,[w_p3]
+    mov [wr3],ax
+    xor di,di
+    xor bh,bh
+    mov word [fw_y],100
+.row:
+    mov bl,[wr3+1]
+    mov al,[sin56+bx]
+    add al,FIXED_PAL_COUNT+1
+    mov [rowc],al
+    mov ax,[w_ry3]
+    add [wr3],ax
+    mov dx,[wr1]
+    mov ax,[w_ry1]
+    add [wr1],ax
+    mov cx,[wr2]
+    mov ax,[w_ry2]
+    add [wr2],ax
+    lea ax,[di+320]
+    mov [row_end],ax
+.px:
+    mov bl,dh
+    mov al,[sin56+bx]
+    mov bl,ch
+    add al,[sin56+bx]
+    add al,[rowc]
+    add dx,[w_st1]
+    add cx,[w_st2]
+    mov ah,al
+    stosw
+    mov [es:di+318],ax
+    cmp di,[row_end]
+    jb .px
+    add di,320
+    dec word [fw_y]
+    jnz .row
     ret
 
-px_tunnel:
-    mov ax,cx
-    sub ax,160
-    mov bx,dx
-    sub bx,100
-    push ax
+; fieldM: value = ta_tab[angle] + tr_tab[radius] (maps are per 2x2 block)
+fieldM:
+    xor si,si
+    xor di,di
+    xor bh,bh
+    mov dx,100
+.row:
+    mov cx,160
+.px:
+    mov bl,[ang_map+si]
+    mov al,[ta_tab+bx]
+    mov bl,[rad_map+si]
+    add al,[tr_tab+bx]
+    mov ah,al
+    stosw
+    mov [es:di+318],ax
+    inc si
+    dec cx
+    jnz .px
+    add di,320
+    dec dx
+    jnz .row
+    ret
+
+; fieldS: value = sin165[ta_tab[angle] + tr_tab[radius]]
+fieldS:
+    xor si,si
+    xor di,di
+    xor bh,bh
+    mov dx,100
+.row:
+    mov cx,160
+.px:
+    mov bl,[ang_map+si]
+    mov al,[ta_tab+bx]
+    mov bl,[rad_map+si]
+    add al,[tr_tab+bx]
+    mov bl,al
+    mov al,[sin165+bx]
+    mov ah,al
+    stosw
+    mov [es:di+318],ax
+    inc si
+    dec cx
+    jnz .px
+    add di,320
+    dec dx
+    jnz .row
+    ret
+
+; ----- one-time setup (called from start) -----
+
+; sin56[i]  = 0..55   (a sine, offset to be non-negative)
+; sin165[i] = 42..205 (the same wave stretched over the palette, +42)
+; ident[i]  = i
+build_tabs:
+    xor si,si
+.bt:
+    movsx ax,byte [sintab+si]
+    add ax,127
+    mov bx,ax
+    imul ax,56
+    shr ax,8
+    mov [sin56+si],al
+    imul bx,165
+    shr bx,8
+    add bl,FIXED_PAL_COUNT+1
+    mov [sin165+si],bl
+    mov ax,si
+    mov [ident+si],al
+    inc si
+    cmp si,256
+    jb .bt
+    ret
+
+; integer square root: AX = floor(sqrt(AX)) (AX treated as unsigned)
+isqrt:
     push bx
-    call odist
-    shl ax,2
-    mov bx,bp
-    shl bx,2
-    sub ax,bx
-    mov bx,ax
-    SINTO ax                      ; rings flowing towards the viewer
-    pop bx                        ; y
-    pop si                        ; x
-    push ax
-    imul bx,si
-    sar bx,6
-    add bx,bp
-    SINTO si                      ; hyperbolic twist
-    pop ax
-    add ax,si
-    ret
-
-px_hyper:
-    mov si,cx
-    sub si,160
-    mov bx,dx
-    sub bx,100
-    imul bx,si
-    sar bx,6
-    mov ax,bp
-    shl ax,1
-    add bx,ax
-    SINTO ax
-    mov bx,cx
-    shl bx,1
-    sub bx,bp
-    SINTO si
-    add ax,si
-    ret
-
-; Two ring families: centres in fx0..fx3, frequency fx4, phase fx5.
-px_rings:
-    mov ax,cx
-    sub ax,[fx0]
-    mov bx,dx
-    sub bx,[fx1]
-    call odist
-    imul ax,[fx4]
-    sub ax,[fx5]
-    mov bx,ax
-    SINTO ax
-    mov [fx6],ax
-    mov ax,cx
-    sub ax,[fx2]
-    mov bx,dx
-    sub bx,[fx3]
-    call odist
-    imul ax,[fx4]
-    sub ax,[fx5]
-    mov bx,ax
-    SINTO ax
-    add ax,[fx6]
-    ret
-
-pre_moire:
-    mov word [fx4],4
-    mov word [fx5],0
-    mov cl,2
-    jmp set_centres
-pre_ripple:
-    mov word [fx4],4
-    mov ax,bp
-    mov bx,ax
-    add ax,ax
-    add ax,bx
-    add ax,ax                     ; 6*frame: rings travel outwards
-    mov [fx5],ax
-    mov cl,3
-set_centres:                      ; CL = orbit radius shift
-    mov bx,bp
-    add bx,bx
-    SINTO ax
-    sar ax,cl
-    push ax                       ; ox
-    mov bx,bp
-    add bx,bx
-    add bx,64
-    SINTO ax
-    sar ax,cl
-    mov si,ax                     ; oy
-    pop ax
-    mov bx,100
-    add bx,ax
-    mov [fx0],bx
-    mov bx,220
-    sub bx,ax
-    mov [fx2],bx
-    mov bx,100
-    add bx,si
-    mov [fx1],bx
-    mov bx,100
-    sub bx,si
-    mov [fx3],bx
-    ret
-
-px_softcheck:
-    mov bx,cx
-    add bx,cx
-    add bx,cx
-    add bx,bp
-    SINTO ax
-    mov bx,dx
-    add bx,dx
-    add bx,dx
-    mov si,bp
-    add si,si
-    sub bx,si
-    SINTO si
-    imul ax,si
-    sar ax,7                      ; -127..127
-    mov bx,ax
-    add ax,ax
-    add ax,bx                     ; x3
-    ret
-
-px_ribbons:
-    mov bx,dx
-    shl bx,1
-    mov si,bp
-    add si,si
-    add si,bp
-    add bx,si
-    SINTO ax
-    sar ax,1
-    mov si,cx
-    add si,cx
-    add si,cx
-    add si,ax
-    mov bx,si
-    SINTO ax
-    mov bx,cx
-    shl bx,1
-    sub bx,bp
-    SINTO si
-    sar si,1
-    add ax,si
-    add ax,ax
-    ret
-
-px_warpfield:
-    mov bx,cx
-    sub bx,160
-    mov [fx6],bx                  ; X
-    mov bx,dx
-    sub bx,100
-    mov [fx7],bx                  ; Y
-    mov bx,[fx7]
-    mov si,bx
-    add bx,bx
-    add bx,si
-    add bx,bp
-    SINTO ax
-    sar ax,1
-    mov bx,[fx6]
-    mov si,bx
-    add bx,bx
-    add bx,si
-    add bx,ax
-    SINTO ax
-    mov [fx8],ax
-    mov bx,[fx6]
-    mov si,bx
-    add bx,bx
-    add bx,si
-    sub bx,bp
-    SINTO ax
-    sar ax,1
-    mov bx,[fx7]
-    mov si,bx
-    add bx,bx
-    add bx,si
-    add bx,ax
-    SINTO ax
-    add ax,[fx8]
-    ret
-
-px_copper:
-    mov bx,cx
-    add bx,bx
-    add bx,bp
-    SINTO ax
-    sar ax,2
-    mov bx,dx
-    add bx,bx
-    add bx,dx
-    add bx,ax
-    mov ax,bp
-    shl ax,2
-    add bx,ax
-    SINTO ax
-    add ax,ax
-    mov bx,cx
-    SINTO si
-    sar si,2
-    add ax,si
-    ret
-
-px_diamond:
-    mov ax,cx
-    sub ax,160
-    mov si,ax
-    sar si,15
-    xor ax,si
-    sub ax,si
-    mov bx,dx
-    sub bx,100
-    mov si,bx
-    sar si,15
-    xor bx,si
-    sub bx,si
-    add ax,bx                     ; Manhattan distance
-    mov bx,ax
-    add bx,bx
-    add bx,ax
-    mov ax,bp
-    shl ax,2
-    sub bx,ax
-    SINTO ax
-    mov bx,cx
-    add bx,bp
-    SINTO si
-    sar si,1
-    add ax,si
-    ret
-
-px_lattice:
-    mov bx,cx
-    shl bx,2
-    add bx,bp
-    SINTO ax
-    mov bx,dx
-    shl bx,2
-    sub bx,bp
-    SINTO si
-    add ax,si
-    mov bx,cx
+    push cx
+    push dx
+    mov bx,ax                     ; n
+    xor ax,ax                     ; result
+    mov cx,4000h                  ; highest power of four
+.a:
+    cmp cx,bx
+    jbe .b
+    shr cx,2
+    jmp .a
+.b:
+    test cx,cx
+    jz .done
+    mov dx,ax
+    add dx,cx
+    cmp bx,dx
+    jb .lt
     sub bx,dx
-    add bx,bx
-    mov si,bp
-    add si,si
-    add bx,si
-    SINTO si
-    add ax,si
-    ret
-
-px_wavy:
-    mov bx,dx
-    add bx,bx
-    add bx,dx
-    mov si,bp
-    add si,si
-    add si,bp
-    add bx,si
-    SINTO ax
-    sar ax,1
+    shr ax,1
     add ax,cx
-    mov bx,ax
-    add bx,ax
-    add bx,ax
-    add bx,bp
-    SINTO ax
-    mov si,ax
-    add ax,ax
-    add ax,si
+    jmp .nx
+.lt:
+    shr ax,1
+.nx:
+    shr cx,2
+    jmp .b
+.done:
+    pop dx
+    pop cx
+    pop bx
     ret
 
-px_scanwave:
-    mov bx,cx
-    add bx,bx
-    mov si,bp
-    add si,si
-    add si,bp
-    add bx,si
-    SINTO ax
-    sar ax,1
-    mov si,dx
-    add si,si
-    add si,dx
-    add si,si                     ; 6*y
-    mov bx,bp
-    shl bx,2
-    sub si,bx
-    mov bx,si
-    SINTO si
-    add ax,si
-    add ax,si
-    ret
-
-; Rotation of (X,Y) by the angle held in BX: u -> AX, w -> SI (both /256 scaled).
-; In: fx6=X, fx7=Y. Clobbers BX, fx8.
-rot_xy:
-    mov [fx8],bx
-    add bx,64
-    SINTO ax                      ; cos
-    imul ax,[fx6]
-    sar ax,8
-    mov [fx9],ax
-    mov bx,[fx8]
-    SINTO ax                      ; sin
-    mov si,ax
-    imul ax,[fx7]
-    sar ax,8
-    add [fx9],ax                  ; u = X*cos + Y*sin
-    neg si
-    imul si,[fx6]
-    sar si,8
-    mov bx,[fx8]
-    add bx,64
-    SINTO ax
-    imul ax,[fx7]
-    sar ax,8
-    add si,ax                     ; w = -X*sin + Y*cos
-    mov ax,[fx9]
-    ret
-
-px_rotgrid:
-    mov bx,cx
-    sub bx,160
-    mov [fx6],bx
-    mov bx,dx
-    sub bx,100
-    mov [fx7],bx
-    mov bx,bp
-    call rot_xy
+; Polar maps for the 160x100 block grid, centre (80,50):
+;   rad_map = floor(sqrt(6*(dx^2+dy^2)))   (0..231, a screen-filling radius)
+;   ang_map = angle in 1/256 turns
+; Both are computed once; the angle uses a 65-entry atan table on the ratio of
+; the smaller to the larger coordinate and folds it into the right octant.
+build_maps:
+    xor di,di
+    mov word [bm_y],-50
+.y:
+    mov word [bm_x],-80
+.x:
+    mov ax,[bm_x]
+    imul ax,ax
+    mov bx,[bm_y]
+    imul bx,bx
+    add ax,bx
+    imul ax,6
+    call isqrt
+    mov [rad_map+di],al
+    mov ax,[bm_x]
+    cwd
+    xor ax,dx
+    sub ax,dx                     ; |x|
+    mov bx,[bm_y]
+    mov dx,bx
+    sar dx,15
+    xor bx,dx
+    sub bx,dx                     ; |y|
+    xor cx,cx                     ; cx = 1 if the angle is steeper than 45 degrees
+    cmp bx,ax
+    jbe .ns
+    xchg ax,bx
+    inc cx
+.ns:
+    test ax,ax
+    jz .a0
+    shl bx,6
+    xchg ax,bx                    ; ax = minor*64, bx = major
+    xor dx,dx
+    div bx                        ; ax = ratio 0..64
     mov bx,ax
-    add bx,bx
-    add bx,ax
-    SINTO ax
-    mov bx,si
-    add bx,bx
-    add bx,si
-    SINTO si
-    add ax,si
-    ret
-
-px_spiral:
-    mov bx,cx
-    sub bx,160
-    mov [fx6],bx
-    mov ax,bx
-    mov bx,dx
-    sub bx,100
-    mov [fx7],bx
-    call odist
-    add ax,ax
-    add ax,bp
-    mov bx,ax
-    call rot_xy                   ; angle grows with distance: spiral arms
-    mov bx,ax
-    shl bx,2
-    SINTO ax
-    mov bx,si
-    shl bx,2
-    SINTO si
-    sar si,1
-    add ax,si
-    ret
-
-px_finale:
-    mov bx,cx
-    shl bx,2
-    add bx,bp
-    SINTO ax
-    sar ax,2                      ; wobble
-    mov [fx6],ax
-    mov ax,cx
-    sub ax,160
-    mov bx,dx
-    sub bx,100
-    call odist
-    mov bx,ax
-    add bx,bx
-    mov ax,bp
-    add ax,ax
-    add ax,bp
-    sub bx,ax
-    add bx,[fx6]
-    SINTO ax
-    mov bx,cx
-    add bx,bx
-    add bx,bp
-    SINTO si
-    add ax,si
-    mov bx,dx
-    add bx,bx
-    sub bx,bp
-    SINTO si
-    add ax,si
+    movzx ax,byte [atan_tab+bx]
+    test cx,cx
+    jz .ns2
+    neg ax
+    add ax,64
+.ns2:
+    cmp word [bm_x],0
+    jge .xp
+    neg ax
+    add ax,128
+.xp:
+    cmp word [bm_y],0
+    jge .yp
+    neg ax
+.yp:
+    mov [ang_map+di],al
+    jmp .st
+.a0:
+    mov byte [ang_map+di],0
+.st:
+    inc di
+    inc word [bm_x]
+    cmp word [bm_x],80
+    jl .x
+    inc word [bm_y]
+    cmp word [bm_y],50
+    jl .y
     ret
 
 wait_vsync:
@@ -1153,31 +1086,29 @@ scroll_draw:
     sar ax,5                       ; wave amplitude ~ -4..4 px (table is x127)
     add ax,SCROLL_BASE_Y
     mov dx,ax                      ; dx = this column's base Y
-    xor cx,cx                      ; cx = glyph row 0..7
+    ; Direct stores instead of put_pixel (the column's rows are always on screen:
+    ; baseline 182 +-4, 8 rows): di = y*320 + x, then +320 per glyph row. Each lit
+    ; pixel gets a black drop shadow down-right, stored first so the glyph colour
+    ; lands on top of it; only lit pixels are drawn, so the sky shows through.
+    mov ax,dx
+    shl ax,6
+    mov di,ax
+    shl ax,2
+    add di,ax                      ; dx*64 + dx*256 = dx*320
+    add di,[scroll_x]
+    mov bh,[scroll_fg_now]
+    mov cx,8
 .row:
-    mov al,[si]                    ; si walks the glyph's 8 row bytes
+    mov al,[si]
+    inc si
     test al,bl
-    jz .rownext                    ; only lit pixels are drawn: no background
-    push bx                        ; band, so the sky shows through between
-    push dx                        ; letters. Each lit pixel gets a one-pixel
-    mov ax,dx                      ; black drop shadow down-right, drawn first
-    add ax,cx                      ; so the glyph colour lands on top of it
-    mov bx,[scroll_x]
-    inc ax
-    inc bx
-    mov dl,SCROLL_BG
-    call put_pixel
-    dec ax
-    dec bx
-    mov dl,[scroll_fg_now]
-    call put_pixel
-    pop dx
-    pop bx
+    jz .rownext
+    mov byte [es:di+321],SCROLL_BG
+    mov [es:di],bh
 .rownext:
-    inc si                         ; next glyph row byte
-    inc cx
-    cmp cx,8
-    jb .row
+    add di,320
+    dec cx
+    jnz .row
     mov ax,[scroll_x]
     inc ax
     mov [scroll_x],ax
@@ -2709,16 +2640,33 @@ poly_min times 200 dw 0           ; per-scanline left/right extent of the polygo
 poly_max times 200 dw 0
 
 ; --- 3D starfield scene state ---
-fx0 dw 0
-fx1 dw 0
-fx2 dw 0
-fx3 dw 0
-fx4 dw 0
-fx5 dw 0
-fx6 dw 0
-fx7 dw 0
-fx8 dw 0
-fx9 dw 0
+; --- field engine state and tables ---
+ANG_MAP equ 4000h                 ; per-block angle map, 160*100 bytes
+RAD_MAP equ 4000h+16000           ; per-block radius map
+ang_map equ ANG_MAP
+rad_map equ RAD_MAP
+w_st1 dw 0
+w_st2 dw 0
+w_ry1 dw 0
+w_ry2 dw 0
+w_ry3 dw 0
+w_p1 dw 0
+w_p2 dw 0
+w_p3 dw 0
+wr1 dw 0
+wr2 dw 0
+wr3 dw 0
+rowc db 0
+row_end dw 0
+fw_y dw 0
+bm_x dw 0
+bm_y dw 0
+ta_tab times 256 db 0
+tr_tab times 256 db 0
+sin56 times 256 db 0
+sin165 times 256 db 0
+ident times 256 db 0
+atan_tab db 0,1,1,2,3,3,4,4,5,6,6,7,8,8,9,9,10,11,11,12,12,13,13,14,15,15,16,16,17,17,18,18,19,19,20,20,21,21,22,22,23,23,24,24,25,25,25,26,26,27,27,27,28,28,29,29,29,30,30,30,31,31,31,32,32
 star_idx dw 0
 sweep_mask db 255
 star_hit db 0

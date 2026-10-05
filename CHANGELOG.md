@@ -4,6 +4,19 @@ Releases are tagged `vX.Y.Z`; pushing a tag runs `.github/workflows/release.yml`
 which builds, audits, tests and attaches `UBER256.COM`, `UBERSHOW.COM` and
 `SHA256SUMS`. The notes for a tag are taken from its section below.
 
+## [1.2.0] - 2026-10-05
+
+### Changed
+- **Hyper-optimised field renderer**: ~10x cheaper (about 240k instructions per frame,
+  down from 2000-3100k) so the demo fits a 70 Hz frame on 486-class hardware. Half
+  resolution with doubled-word stores, lookup tables, and precomputed polar angle and
+  radius maps. All field scenes were re-expressed on it (tunnel is now a real 1/r
+  tunnel; vortex and finale are spirals).
+- Scroller draws with direct stores instead of per-pixel `put_pixel` (~60k to ~10k).
+- `SETBLOCK` now keeps 64 KiB (image 10 KB, maps at 4000h).
+- Tests: polar maps vs `atan2`/`sqrt` for every block, palette range, and a
+  per-frame instruction budget.
+
 ## [1.1.0] - 2026-10-05
 
 ### Changed

@@ -158,14 +158,14 @@ class Machine:
         return used
 
     # --- calling one routine in isolation (return address 0 -> PSP INT 20h) ---
-    def call(self, addr, **regs):
+    def call(self, addr, count=5_000_000, **regs):
         self.exited = False
         uc = self.uc
         uc.reg_write(UC_X86_REG_SP, 0xFFF0)
         uc.mem_write(LIN + 0xFFF0, b"\x00\x00")
         for k, v in regs.items():
             uc.reg_write(getattr(__import__("unicorn.x86_const", fromlist=["x"]), f"UC_X86_REG_{k.upper()}"), v)
-        uc.emu_start(addr, 0xFFFF0, count=5_000_000)
+        uc.emu_start(addr, 0xFFFF0, count=count)
         return uc
 
     def rd16(self, off, signed=False):
@@ -402,6 +402,51 @@ def test_bounce():
     mm.flip_hooks.append(hook3); mm.run(460)
     check(len(core) == 2 and core[0] > 150 and core[1] > 60, f"solid cores drawn inside both wireframes ({core})")
 
+def test_fields():
+    print("\n== field engine: polar maps, tables, value range, per-frame cost ==")
+    import math
+    com, lst = assemble([], "fld")
+    m = Machine(com, 5)
+    m.call(symbol(lst, "build_tabs"), count=2_000_000)
+    m.call(symbol(lst, "build_maps"), count=40_000_000)
+    angm, radm = 0x4000, 0x4000 + 16000
+    A = bytes(m.uc.mem_read(LIN + angm, 16000)); R = bytes(m.uc.mem_read(LIN + radm, 16000))
+    bad_r = bad_a = 0
+    for y in range(100):
+        for x in range(160):
+            dx, dy = x - 80, y - 50
+            want_r = int(math.sqrt(6 * (dx * dx + dy * dy)))
+            if abs(R[y * 160 + x] - want_r) > 1: bad_r += 1
+            if dx or dy:
+                want_a = (math.atan2(dy, dx) / (2 * math.pi) * 256) % 256
+                d = abs(A[y * 160 + x] - want_a); d = min(d, 256 - d)
+                if d > 1.5: bad_a += 1
+    check(bad_r == 0, f"radius map = sqrt(6(dx^2+dy^2)) within 1 for all 16000 blocks ({bad_r} bad)")
+    check(bad_a == 0, f"angle map = atan2 within 1.5/256 turn for all blocks ({bad_a} bad)")
+    s56 = bytes(m.uc.mem_read(LIN + symbol(lst, "sin56"), 256)); s165 = bytes(m.uc.mem_read(LIN + symbol(lst, "sin165"), 256))
+    check(min(s56) == 0 and max(s56) == 55, f"sin56 spans 0..55 ({min(s56)}..{max(s56)})")
+    check(min(s165) >= 42 and max(s165) <= 205, f"sin165 spans the animated palette 42..205 ({min(s165)}..{max(s165)})")
+    # every field scene: pixels come from the animated palette range, and the frame is cheap
+    from unicorn.x86_const import UC_X86_REG_IP
+    worst = 0
+    for scene in (0, 1, 2, 3, 5, 7, 8, 13, 14, 17):
+        com2, _ = assemble(force_scene(scene), f"fs{scene}")
+        mm = Machine(com2, 60); marks, st, lows = [], {"used": 0}, []
+        def hook(m2, page, f, marks=marks, st=st, lows=lows):
+            marks.append(st["used"])
+            if f == 40:
+                px = page_bytes(m2, page)
+                lows.append(sum(1 for y in range(12, 170) for x in range(0, 320, 3) if px[y * 320 + x] < 42))
+        mm.flip_hooks.append(hook)
+        started = False
+        while mm.flips < 62 and not mm.exited:
+            ip = 0x100 if not started else mm.uc.reg_read(UC_X86_REG_IP); started = True
+            mm.uc.emu_start(ip, 0xFFFF0, count=5000); st["used"] += 5000
+        d = [b - a for a, b in zip(marks[10:], marks[11:])]
+        worst = max(worst, max(d))
+        check(lows and lows[0] < 0.06 * 158 * 107, f"scene {scene + 1}: field uses the animated palette range ({lows[0] if lows else '?'} stray pixels)")
+    check(worst < 330_000, f"every sampled field frame costs under 330k instructions (worst {worst // 1000}k; the old fields cost 2000-3100k)")
+
 def test_lines(n=4000):
     print(f"\n== draw_line oracle: {n} random + structured lines, in isolation ==")
     import random, re as _re
@@ -553,7 +598,7 @@ def test_intro(frames=40):
           "IRQ1 masked while running, unmasked again at exit")
     check(m.uc.reg_read(UC_X86_REG_SP) == 0, "stack balanced: final RET popped exactly the DOS return word")
 
-TESTS = {"lines": test_lines, "crtc": test_crtc, "math": test_math, "palette": test_palette, "gfx": test_gfx, "bounce": test_bounce, "music": test_music,
+TESTS = {"lines": test_lines, "crtc": test_crtc, "math": test_math, "palette": test_palette, "gfx": test_gfx, "bounce": test_bounce, "fields": test_fields, "music": test_music,
          "exit": test_exit_and_pacing, "scenes": test_scenes, "intro": test_intro}
 
 if __name__ == "__main__":

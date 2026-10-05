@@ -79,8 +79,30 @@ transposition. Because `bp` is 16-bit, one clock cycle is 128 scene slots and
 is documented rather than fixed. `SCENE_SHIFT` must stay at least 2 (the palette
 code shifts by `SCENE_SHIFT-2`).
 
-Scenes 1-15 and 18 use the `FIELD` macro: for every pixel a routine (`px_*`) returns a signed sum of sines (-381..381) in AX, mapped to palette indices 42..255 (`(v+384)*7>>5 + 42`) and stored with `STOSB`. A pixel routine takes x in CX and y in DX and must preserve CX, DX and DI. `odist` gives an octagonal distance (`max + min/2`), and `rot_xy` rotates coordinates for the grid and spiral.
-Scenes 16-17 clear with `fill_sky` and draw 3D content instead.
+Scenes 1-15 and 18 use the field engine below; scenes 16-17 clear with `fill_sky` and draw 3D content.
+
+### Field engine (the "hyper-optimised" renderer)
+
+Budget: one 70 Hz frame, so the work per frame must be small. The previous fields
+evaluated sines per pixel (2-3M instructions/frame); the engine does ~240k.
+
+- **Half resolution**: each value is computed per 2x2 block (160x100) and stored with
+  `STOSW` (the byte doubled) to the row and, `[es:di+318]`, the row below.
+- **Tables**: `sin56` (0..55) and `sin165` (42..205) are built once from `sintab`.
+  Values land in palette indices 42..255 (the animated part of the DAC): three
+  `sin56` terms plus 42 stay below 207, and `sin165` already includes the offset.
+- **Polar maps**: at start `build_maps` fills `ang_map` and `rad_map` (160x100 bytes
+  each, at `4000h`, which is why `SETBLOCK` now keeps 64 KiB) with the angle (1/256
+  turn, from a 65-entry atan table on min/max folded into the right octant) and
+  `floor(sqrt(6(dx^2+dy^2)))` (an integer square root). Tests check both against
+  `atan2`/`sqrt` for all 16,000 blocks.
+- **Loops**: `fieldW` = `sin56[acc1] + sin56[acc2] + row term` with 8.8 phase
+  accumulators (steps in `w_st*`, `w_ry*`); `fieldM` = `ta_tab[angle] + tr_tab[radius]`;
+  `fieldS` = `sin165[ta_tab[angle] + tr_tab[radius]]` (spirals). The 256-entry
+  `ta_tab`/`tr_tab` are rebuilt each frame (`tab_lin`; `tab_depth` gives the
+  tunnel a true `1/r`).
+- BH is kept at zero so `BL` can be both index and accumulator, and `BP` (the frame
+  clock) is never touched.
 
 ## 3D engine
 

@@ -13,7 +13,7 @@ code. "40K" names the size class (a 40,960-byte budget); the full show uses unde
 
 | Program | What it is | Size | Video | Audio |
 |---|---|---|---|---|
-| `UBERSHOW.COM` (`showcase.asm`) | 18-scene demo: 3D engine, starfield, scroller, music | ~9 KB | VGA mode 13h | OPL2 FM |
+| `UBERSHOW.COM` (`showcase.asm`) | 18-scene demo: 3D engine, starfield, scroller, music | ~10 KB | VGA mode 13h | OPL2 FM |
 | `UBER256.COM` (`intro256.asm`) | strict sizecoded intro, hard 256-byte gate | 70 bytes | VGA mode 13h | silent |
 
 ## Run it
@@ -60,29 +60,44 @@ All captured from the real binary running in DOSBox.
 
 | # | Scene | Technique |
 |---|---|---|
-| 1 | Sine plasma | column + row + diagonal wave |
-| 2 | Tunnel | rings flowing outward, hyperbolic twist |
-| 3 | Hyperbola bands | x*y bands crossed with a column wave |
-| 4 | Moire | two ring families on orbiting centres |
-| 5 | Soft checker | product of two sines |
-| 6 | Ripples | dual-source rings travelling outward |
-| 7 | Ribbons | twisting vertical bands |
-| 8 | Warped plasma | domain-warped sine fields |
-| 9 | Copper bands | wavy horizontal bars |
-| 10 | Diamond rings | expanding Manhattan rings |
-| 11 | Lattice | three-wave diagonal interference |
-| 12 | Warp bands | horizontal wave displacement |
-| 13 | Scanwave | crossed fast/slow waves |
-| 14 | Rotating grid | rotated coordinates, sine grid |
-| 15 | Spiral vortex | rotation angle grows with distance |
+| 1 | Sine plasma | two diagonal waves + a row wave |
+| 2 | Tunnel | angle stripes x 1/r depth rings (polar map) |
+| 3 | Orbs | crossing wave families in polar space |
+| 4 | Moire | fine rays against moving rings |
+| 5 | Soft checker | egg-crate of two perpendicular waves |
+| 6 | Ripples | pure rings travelling outwards |
+| 7 | Ribbons | near-vertical twisting bands |
+| 8 | Interference | three moving waves |
+| 9 | Copper bars | fast near-horizontal bars |
+| 10 | Diamonds | crossed diagonal waves |
+| 11 | Lattice | fine diagonal lattice |
+| 12 | Wavy bands | slow oblique waves |
+| 13 | Scanwave | dense scanline waves |
+| 14 | Rotating grid | wave directions turn with time |
+| 15 | Vortex | three-armed spiral |
 | 16 | **Cube + octahedron (3D engine)** | solid shaded, wireframe force-fields with bouncing stars |
 | 17 | **3D starfield** | perspective stars with trails |
-| 18 | Finale | wobbling rings plus column and row waves |
+| 18 | Finale | fast two-armed spiral |
 
-Scenes 1-15 and 18 share one `FIELD` loop: a routine returns a sum of sines per pixel and
-it is mapped onto the animated part of the palette, so everything is smooth. Scenes 16-17 draw 3D content instead. Every scene has raster
-bars (except the 3D ones), a progress strip, fades, and the bottom scroller.
+Scenes 1-15 and 18 run on a lookup-table field engine (see Performance below), so they
+are smooth and cheap. Scenes 16-17 draw 3D content instead. Every scene has raster bars
+(except the 3D ones), a progress strip, fades, and the bottom scroller.
 Each scene lasts 512 frames (~7.3 s at 70 Hz); a full pass is ~2 minutes.
+
+## Performance: built to hold 70 Hz
+
+A frame has to finish inside one vertical retrace (~14 ms) or the display stutters.
+The first field scenes cost **2-3 million instructions a frame**, hopeless on real
+hardware. The engine now costs about **240k** (3D scenes ~130k), measured by running
+the real binary in the emulator, and a test keeps it under budget.
+
+| Trick | What it does |
+|---|---|
+| Half resolution | each value is computed once per 2x2 block and stored as a doubled word to two rows; the fields are smooth, so nobody can tell |
+| Lookup tables | a pixel is a few table reads and adds; the sine waves are precomputed 256-entry tables |
+| Polar maps | angle and radius for every block are computed once at start, so tunnels, rings and spirals are `TA[angle] + TR[radius]` with no `atan`/`sqrt` per frame |
+| Cheap palette | fixed colours fit in the blank; the animated sweep is spread over four frames |
+| Direct scroller stores | no per-pixel clipping or multiply |
 
 ## Layout
 
