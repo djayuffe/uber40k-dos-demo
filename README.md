@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/djayuffe/uber40k-dos-demo/actions/workflows/ci.yml/badge.svg)](https://github.com/djayuffe/uber40k-dos-demo/actions/workflows/ci.yml)
 
-![UBERSHOW running in DOSBox](screenshot.jpg)
+![UBERSHOW running in DOSBox: shaded cube and octahedron over a night sky](screenshot.jpg)
 
 Two flat 16-bit real-mode `.COM` programs written in NASM. They run in DOSBox or on
 real VGA + Sound Blaster/AdLib hardware. There are no images, fonts, samples, trackers,
@@ -44,6 +44,17 @@ DOSBox (`mount c .`, `c:`, `UBERSHOW.COM`), or build it yourself:
   no DOS allocation.
 - **Sine-wave scroller** with a hand-made 5x7 font, scene fades and shutter transitions.
 - **Tested behaviour**: ~80 checks run the real binary in an emulated CPU (see Testing).
+
+## Screenshots
+
+All captured from the real binary running in DOSBox.
+
+| | |
+|---|---|
+| ![Sine plasma](docs/plasma.jpg) | ![Spiral vortex](docs/spiral.jpg) |
+| **Scene 1: sine plasma.** Three sine waves summed and mapped onto the animated palette, with the shadowed sine scroller along the bottom. | **Scene 15: spiral vortex.** Coordinates are rotated by an angle that grows with distance from the centre. |
+| ![Solid shaded 3D](docs/solid3d.jpg) | ![Wireframe force-fields](docs/wireframe.jpg) |
+| **Scene 16, solid phase.** Perspective projection, backface culling and a directional light with a 16-step shading ramp, over a night-sky gradient with stars. | **Scene 16, wireframe phase.** The objects become hollow force-fields: stars bounce off them and a small solid core spins inside each. |
 
 ## The scenes
 
