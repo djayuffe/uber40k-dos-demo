@@ -250,11 +250,14 @@ def test_music(frames=1100):
     kick, snare, hat, tom, crash = hits(0x10), hits(0x08), hits(0x01), hits(0x04), hits(0x02)
     pos = lambda f: (f // 8) % 8
     inbar = lambda f: (f // 8) % 32
-    check(all(f % 8 == 0 and pos(f) == 0 for f in kick) and len(kick) >= frames // 64 - 1,
-          f"kick on every downbeat ({len(kick)} hits)")
+    check(all(f % 8 == 0 and (pos(f) == 0 or (bar_of(f) == 2 and inbar(f) == 14)) for f in kick)
+          and len([f for f in kick if pos(f) == 0]) >= frames // 64 - 1,
+          f"kick on every downbeat, plus one syncopated kick in bar 3 ({len(kick)} hits)")
     snare_ok = all(pos(f) == 4 or (bar_of(f) == 3 and inbar(f) >= 24) for f in snare)
     check(snare and snare_ok, f"snare on the backbeat, plus the bar-4 fill ({len(snare)} hits)")
-    check(hat and all(pos(f) in (2, 6) for f in hat), f"hi-hat only on the off-beats ({len(hat)} hits)")
+    hat_ok = all(pos(f) in (2, 6) if bar_of(f) == 0 else pos(f) not in (0, 4) for f in hat)
+    check(hat and hat_ok and any(pos(f) in (1, 3, 5, 7) for f in hat),
+          f"hi-hat: eighths in bar 1, off-beat sixteenths added later, never on kick/snare ({len(hat)} hits)")
     check(tom and all(bar_of(f) == 3 and inbar(f) >= 24 for f in tom), f"toms only in the bar-4 fill ({len(tom)} hits)")
     check(crash and all(f % 1024 == 0 for f in crash), f"cymbal only at the top of the form (frames {crash})")
 
@@ -288,7 +291,7 @@ def test_gfx():
         if kind == "wipe": continue
         r = ramp(snaps[f])
         if kind == "solid": check(r > 3000, f"frame {f}: solid faces drawn ({r} shaded pixels)")
-        else:               check(r == 0, f"frame {f}: wireframe mode draws no filled faces ({r} shaded pixels)")
+        else:               check(0 < r < 1500, f"frame {f}: wireframe mode fills only the small cores ({r} shaded pixels)")
     wire_px = sum(1 for x in snaps[440][:170 * 320] if x in (2, 3))
     check(wire_px > 150, f"wireframe frame has white/grey edges ({wire_px} px)")
     shades = {x for x in snaps[200][:170 * 320] if 8 <= x <= 23}
@@ -351,6 +354,53 @@ def test_math():
     n, clean = fill([(50, 50), (50, 50), (50, 50), (50, 50)])
     check(clean, f"degenerate (zero-area) polygon is harmless ({n} px)")
 
+
+
+def test_bounce():
+    print("\n== stars bounce off the wireframe force-fields; solid cores inside ==")
+    com, lst = assemble(force_scene(15), "bnc")
+    m = Machine(com, 10)
+    sb = symbol(lst, "star_bounce")
+    sx, sy, hit = symbol(lst, "star_sx"), symbol(lst, "star_sy"), symbol(lst, "star_hit")
+    def bounce(x, y, cx, r):
+        m.wr16(sx, x); m.wr16(sy, y); m.uc.mem_write(LIN + hit, b"\x00")
+        m.call(sb, bx=cx, dx=r)
+        return m.rd16(sx, True), m.rd16(sy, True), m.uc.mem_read(LIN + hit, 1)[0]
+    metric = lambda dx, dy: max(abs(dx), abs(dy)) + min(abs(dx), abs(dy)) // 2
+    x, y, h = bounce(90 + 20, 100, 90, 56)
+    check(h == 1 and x > 90 + 56 and y == 100, f"star 20px inside the field is mirrored to 36px outside ({x},{y})")
+    x, y, h = bounce(90 + 80, 100, 90, 56)
+    check(h == 0 and (x, y) == (170, 100), "star outside the field is untouched")
+    ok = all(metric(bounce(90 + dx, 100 + dy, 90, 56)[0] - 90, bounce(90 + dx, 100 + dy, 90, 56)[1] - 100) >= 56
+             for dx in range(-50, 51, 7) for dy in range(-50, 51, 7) if dx or dy)
+    check(ok, "every deflected star lands on or outside the field boundary")
+    def stars_inside(replacements):
+        com2, _ = assemble(force_scene(15) + replacements, "bnc2")
+        mm = Machine(com2, 515)
+        seen = []
+        def hook(m2, page, f):
+            if 400 <= f <= 505:                      # wireframe quarter
+                px = page_bytes(m2, page)
+                n = 0
+                for yy in range(46, 154):
+                    for xx in range(36, 144):
+                        if metric(xx - 90, yy - 100) < 54 and px[yy * 320 + xx] in (40, 41): n += 1
+                seen.append(n)
+        mm.flip_hooks.append(hook); mm.run(520)
+        return sum(seen)
+    on = stars_inside([])
+    off = stars_inside([("    mov byte [bounce_on],1\n", "    mov byte [bounce_on],0\n")])
+    check(on == 0 and off > 0, f"no star inside the cube field with bounce on ({on}); without it some are ({off})")
+    # cores: a lit solid shape appears inside the wireframe cube/octahedron
+    com3, _ = assemble(force_scene(15), "core")
+    mm = Machine(com3, 450); core = []
+    def hook3(m2, page, f):
+        if f == 440:
+            px = page_bytes(m2, page)
+            core.append(sum(1 for yy in range(80, 120) for xx in range(70, 110) if 8 <= px[yy * 320 + xx] <= 23))
+            core.append(sum(1 for yy in range(85, 115) for xx in range(215, 245) if 8 <= px[yy * 320 + xx] <= 23))
+    mm.flip_hooks.append(hook3); mm.run(460)
+    check(len(core) == 2 and core[0] > 150 and core[1] > 60, f"solid cores drawn inside both wireframes ({core})")
 
 def test_lines(n=4000):
     print(f"\n== draw_line oracle: {n} random + structured lines, in isolation ==")
@@ -503,7 +553,7 @@ def test_intro(frames=40):
           "IRQ1 masked while running, unmasked again at exit")
     check(m.uc.reg_read(UC_X86_REG_SP) == 0, "stack balanced: final RET popped exactly the DOS return word")
 
-TESTS = {"lines": test_lines, "crtc": test_crtc, "math": test_math, "palette": test_palette, "gfx": test_gfx, "music": test_music,
+TESTS = {"lines": test_lines, "crtc": test_crtc, "math": test_math, "palette": test_palette, "gfx": test_gfx, "bounce": test_bounce, "music": test_music,
          "exit": test_exit_and_pacing, "scenes": test_scenes, "intro": test_intro}
 
 if __name__ == "__main__":

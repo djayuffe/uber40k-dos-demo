@@ -532,18 +532,25 @@ scene_vortex:
 ; than looking like one re-skinned object.
 scene_cube:
     call fill_sky
-    call star_pass
-
     ; Solid and shaded for three quarters of every 512-frame scene, plain
     ; wireframe for the last quarter -- the same engine, two render modes.
+    ; In wireframe mode the objects also become hollow force-fields: stars
+    ; bounce off them (star_bounce) and a small solid core spins inside each.
     mov ax,bp
     and ax,180h
     cmp ax,180h
     mov byte [obj_solid],1
+    mov byte [bounce_on],0
     jne .sc_mode
     mov byte [obj_solid],0
+    mov byte [bounce_on],1
 .sc_mode:
+    call star_pass
 
+    cmp byte [obj_solid],0
+    jne .no_core1
+    call draw_core_octa              ; hollow cube: small solid octahedron inside
+.no_core1:
     mov cl,7                       ; angle = frame * 128 (0.5 table step per
     mov ax,bp                      ; frame, as before) but kept as a 16-bit
     shl ax,cl                      ; value so sincos16 can interpolate: the
@@ -566,6 +573,10 @@ scene_cube:
     mov byte [obj_fg_dim],CUBE_FG_DIM
     call render_object
 
+    cmp byte [obj_solid],0
+    jne .no_core2
+    call draw_core_cube              ; hollow octahedron: small solid cube inside
+.no_core2:
     mov cl,6
     mov ax,bp
     shl ax,cl
@@ -596,6 +607,7 @@ scene_cube:
 ; by Z exactly like scene_cube's projection, just for points instead of
 ; wireframe edges, and brightens as a star gets closer.
 scene_starfield:
+    mov byte [bounce_on],0
     call fill_sky
     call star_pass
     jmp overlay
@@ -1268,6 +1280,122 @@ put_pixel:
     pop ax
     ret
 
+; Small solid core spinning inside a wireframe object (counter-rotating, drawn
+; BEFORE the wireframe so the edges stay on top). The caller's per-object
+; parameters are fully reloaded afterwards, so these only touch obj_* state.
+draw_core_octa:
+    mov byte [obj_solid],1
+    mov cl,5
+    mov ax,bp
+    shl ax,cl
+    neg ax
+    mov [cube_angle_y],ax
+    mov cl,6
+    mov ax,bp
+    shl ax,cl
+    mov [cube_angle_x],ax
+    mov word [obj_verts_ptr],core_octa_verts
+    mov word [obj_edges_ptr],octa_edges
+    mov word [obj_faces_ptr],octa_faces
+    mov word [obj_vbytes],6*6
+    mov word [obj_ebytes],12*2
+    mov word [obj_fbytes],8*4
+    mov dword [obj_norml],13967
+    mov word [obj_offset_x],-70
+    mov word [obj_offset_y],0
+    mov byte [obj_fg],CUBE_FG
+    mov byte [obj_fg_dim],CUBE_FG_DIM
+    call render_object
+    mov byte [obj_solid],0
+    ret
+
+draw_core_cube:
+    mov byte [obj_solid],1
+    mov cl,6
+    mov ax,bp
+    shl ax,cl
+    neg ax
+    mov [cube_angle_y],ax
+    mov cl,5
+    mov ax,bp
+    shl ax,cl
+    mov [cube_angle_x],ax
+    mov word [obj_verts_ptr],core_cube_verts
+    mov word [obj_edges_ptr],cube_edges
+    mov word [obj_faces_ptr],cube_faces
+    mov word [obj_vbytes],8*6
+    mov word [obj_ebytes],12*2
+    mov word [obj_fbytes],6*4
+    mov dword [obj_norml],8064
+    mov word [obj_offset_x],70
+    mov word [obj_offset_y],0
+    mov byte [obj_fg],CUBE_FG
+    mov byte [obj_fg_dim],CUBE_FG_DIM
+    call render_object
+    mov byte [obj_solid],0
+    ret
+
+; Reflect the current star (star_sx/star_sy) off a round force-field of radius
+; DX centred at (BX,100): a star that has penetrated the field by some depth is
+; mirrored to that same distance outside it, so it appears to bounce. Distance
+; is the cheap octagonal metric max+min/2 (within ~8% of a circle). Sets
+; star_hit when it deflects, so the star can flash.
+star_bounce:
+    push ax
+    push cx
+    push dx
+    push si
+    push di
+    mov [bnc_r],dx
+    mov [bnc_c],bx
+    mov ax,[star_sx]
+    sub ax,bx
+    mov di,ax                      ; di = dx from centre
+    mov ax,[star_sy]
+    sub ax,100
+    mov si,ax                      ; si = dy from centre
+    mov ax,di
+    cwd
+    xor ax,dx
+    sub ax,dx                      ; |dx|
+    mov cx,si
+    mov dx,cx
+    sar dx,15
+    xor cx,dx
+    sub cx,dx                      ; |dy|
+    cmp ax,cx
+    jge .sb_ord
+    xchg ax,cx
+.sb_ord:
+    shr cx,1
+    add ax,cx                      ; ax = m
+    jz .sb_done
+    cmp ax,[bnc_r]
+    jge .sb_done
+    mov [bnc_m],ax
+    mov cx,[bnc_r]
+    shl cx,1
+    sub cx,ax
+    mov [bnc_f],cx                 ; mirrored distance 2R - m
+    mov ax,di
+    imul word [bnc_f]
+    idiv word [bnc_m]
+    add ax,[bnc_c]
+    mov [star_sx],ax
+    mov ax,si
+    imul word [bnc_f]
+    idiv word [bnc_m]
+    add ax,100
+    mov [star_sy],ax
+    mov byte [star_hit],1
+.sb_done:
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop ax
+    ret
+
 ; 3D starfield pass (no clear, so it can sit behind other scenes). 32 stars, each
 ; with a genuine Z computed fresh from the frame clock; shade steps with depth in
 ; four levels and the nearest stars are drawn 2x2, so they read as closer rather
@@ -1304,6 +1432,16 @@ star_pass:
     idiv word [star_z]
     add ax,100
     mov [star_sy],ax
+    mov byte [star_hit],0
+    cmp byte [bounce_on],0
+    je .st_nb
+    mov bx,90                      ; cube field (centre x = 160-70)
+    mov dx,56
+    call star_bounce
+    mov bx,230                     ; octahedron field (centre x = 160+70)
+    mov dx,36
+    call star_bounce
+.st_nb:
 
     mov ax,[star_z]
     mov dl,CUBE_FG_DIM
@@ -1317,16 +1455,41 @@ star_pass:
     jge .st_col
     mov dl,STAR_NEAR
 .st_col:
+    cmp byte [star_hit],0
+    je .st_nohit
+    mov dl,STAR_NEAR               ; a star that just bounced flashes warm white
+.st_nohit:
     mov bx,[star_sx]
     mov ax,[star_sy]
     call put_pixel
+    cmp byte [star_hit],0
+    jne .st_big
     cmp word [star_z],64
-    jge .st_next
+    jge .st_trail
+.st_big:
     inc bx
     call put_pixel
     inc ax
     call put_pixel
     dec bx
+    call put_pixel
+.st_trail:
+    cmp word [star_z],150          ; closer stars drag a short dim trail back
+    jge .st_next                   ; towards the vanishing point (motion streak)
+    mov ax,[star_sx]
+    sub ax,160
+    cwd
+    mov cx,5
+    idiv cx
+    mov bx,[star_sx]
+    sub bx,ax
+    mov ax,[star_sy]
+    sub ax,100
+    cwd
+    idiv cx
+    neg ax
+    add ax,[star_sy]
+    mov dl,CUBE_FG_DIM
     call put_pixel
 .st_next:
     add si,2
@@ -2264,6 +2427,18 @@ drum_step:
 .dr_hh:
     or cl,01h                     ; hi-hat
 .dr_nohh:
+    test ax,ax
+    jz .dr_no16                   ; bar 1 keeps plain eighth-note hats; later
+    test bx,1                     ; bars add the off-beat sixteenths, so the
+    jz .dr_no16                   ; groove builds across the form
+    or cl,01h
+.dr_no16:
+    cmp ax,2
+    jne .dr_nosync
+    cmp dx,14
+    jne .dr_nosync
+    or cl,10h                     ; syncopated extra kick, bar 3
+.dr_nosync:
     cmp ax,3
     jne .dr_nofill
     cmp dx,24
@@ -2410,6 +2585,12 @@ poly_max times 200 dw 0
 
 ; --- 3D starfield scene state ---
 star_idx dw 0
+star_hit db 0
+bounce_on db 0
+bnc_r dw 0
+bnc_c dw 0
+bnc_m dw 0
+bnc_f dw 0
 star_z dw 0
 star_sx dw 0
 star_sy dw 0
@@ -2438,6 +2619,20 @@ octa_verts: dw  35,  0,  0
             dw   0,-35,  0
             dw   0,  0, 35
             dw   0,  0,-35
+core_cube_verts: dw -12,-12,-12
+                 dw  12,-12,-12
+                 dw  12, 12,-12
+                 dw -12, 12,-12
+                 dw -12,-12, 12
+                 dw  12,-12, 12
+                 dw  12, 12, 12
+                 dw -12, 12, 12
+core_octa_verts: dw  24,  0,  0
+                 dw -24,  0,  0
+                 dw   0, 24,  0
+                 dw   0,-24,  0
+                 dw   0,  0, 24
+                 dw   0,  0,-24
 octa_edges: db 0,2, 0,3, 0,4, 0,5, 1,2, 1,3, 1,4, 1,5, 2,4, 2,5, 3,4, 3,5
 
 

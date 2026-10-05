@@ -409,3 +409,18 @@ not in the emulator tests. `palette_tick` now writes the ~125 fixed entries firs
 (all the 3D scenes use), skips the sweep entirely in scenes 15-16, and runs the
 sweep only for indices 42-255 in the field scenes. The 3D scenes also drop the
 raster bars, which took their colour from the (now unused) animated palette.
+
+## Wireframe phase: force-fields, cores, trails; groove
+
+- In the wireframe quarter of the 3D scene the objects are hollow force-fields:
+  stars that fly into one are **mirrored back out** (`star_bounce`, octagonal
+  distance, flash warm-white on impact), and a small **solid shaded core spins
+  inside** each (an octahedron in the cube, a cube in the octahedron), counter-
+  rotating and drawn under the wire edges.
+- Near stars now drag a short dim **motion trail** towards the vanishing point.
+- Drums: hats gain off-beat sixteenths after bar 1 and bar 3 gets a syncopated
+  kick, so the groove builds across the 4-bar form.
+- Tests: `tests/emu_test.py bounce` checks the reflection maths, that no star
+  sits inside a field with bounce on (and some do with it off), and that both
+  cores render.
+
