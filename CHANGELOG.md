@@ -4,6 +4,15 @@ Releases are tagged `vX.Y.Z`; pushing a tag runs `.github/workflows/release.yml`
 which builds, audits, tests and attaches `UBER256.COM`, `UBERSHOW.COM` and
 `SHA256SUMS`. The notes for a tag are taken from its section below.
 
+## [1.1.0] - 2026-10-05
+
+### Changed
+- **All field scenes reworked.** Scenes 2-15 and 18 were XOR/shift recurrences that
+  rendered as noise. They are now sums of sines (sharing one `FIELD` loop and the
+  existing sine table): tunnel, hyperbola bands, moire, soft checker, ripples,
+  ribbons, warped plasma, copper bands, diamond rings, lattice, warp bands,
+  scanwave, rotating grid, spiral vortex, finale. Validated in a real DOSBox run.
+
 ## [1.0.1] - 2026-10-05
 
 ### Fixed

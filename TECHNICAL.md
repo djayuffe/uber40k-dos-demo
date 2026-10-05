@@ -79,7 +79,7 @@ transposition. Because `bp` is 16-bit, one clock cycle is 128 scene slots and
 is documented rather than fixed. `SCENE_SHIFT` must stay at least 2 (the palette
 code shifts by `SCENE_SHIFT-2`).
 
-Scenes 1-15 and 18 fill all 64,000 pixels with a `STOSB` loop and `jmp overlay`.
+Scenes 1-15 and 18 use the `FIELD` macro: for every pixel a routine (`px_*`) returns a signed sum of sines (-381..381) in AX, mapped to palette indices 42..255 (`(v+384)*7>>5 + 42`) and stored with `STOSB`. A pixel routine takes x in CX and y in DX and must preserve CX, DX and DI. `odist` gives an octagonal distance (`max + min/2`), and `rot_xy` rotates coordinates for the grid and spiral.
 Scenes 16-17 clear with `fill_sky` and draw 3D content instead.
 
 ## 3D engine

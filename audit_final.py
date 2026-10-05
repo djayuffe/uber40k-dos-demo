@@ -4,6 +4,9 @@ import re, sys
 p=Path(__file__).with_name("showcase.asm")
 s=p.read_text()
 errors=[]
+macro=s[s.index("%macro FIELD"):s.index("%endmacro",s.index("%macro FIELD"))]
+for n in ("stosb","cmp cx,320","cmp dx,200","jmp overlay"):
+    if n not in macro: errors.append("FIELD macro lacks "+n)
 required=[
 "%define SCENE_COUNT 18","call wait_vsync","call palette_tick",
 "in al,64h","in al,60h","scene_finale:","scene_cube:",
@@ -39,11 +42,13 @@ for label in scenes:
     if label in SPECIAL:
         for needle in SPECIAL[label]:
             if needle not in body: errors.append(f"{label} missing {needle!r}")
+    elif "FIELD " in body:
+        pass          # the FIELD macro is the one canonical 320x200 sweep ending in jmp overlay
     else:
         if "stosb" not in body: errors.append(label+" has no pixel store")
         if "cmp cx,320" not in body or "cmp dx,200" not in body:
             errors.append(label+" lacks canonical 320x200 bounds")
-    if label != "scene_finale:" and "jmp overlay" not in body:
+    if label != "scene_finale:" and "FIELD " not in body and "jmp overlay" not in body:
         errors.append(label+" does not jump to overlay (falls through into next scene / overruns the VGA page)")
 # the chip keeps sounding after exit unless every voice is keyed off
 if not re.search(r"^exit:\n\s+call opl_silence", s, re.M):
