@@ -351,6 +351,85 @@ def test_math():
     n, clean = fill([(50, 50), (50, 50), (50, 50), (50, 50)])
     check(clean, f"degenerate (zero-area) polygon is harmless ({n} px)")
 
+
+def test_lines(n=4000):
+    print(f"\n== draw_line oracle: {n} random + structured lines, in isolation ==")
+    import random, re as _re
+    com, lst = assemble(force_scene(15), "lines")
+    m = Machine(com)
+    dl = symbol(lst, "draw_line")
+    X0, Y0, X1, Y1, COL = (symbol(lst, s) for s in ("line_x0", "line_y0", "line_x1", "line_y1", "line_color"))
+    zero = bytes(64000 + 1536)
+    rnd = random.Random(40)
+    cases = [(10, 10, 10, 90), (10, 90, 10, 10), (5, 50, 300, 50), (300, 50, 5, 50), (20, 20, 120, 120),
+             (120, 20, 20, 120), (20, 20, 21, 190), (20, 20, 22, 21), (0, 0, 319, 199), (319, 199, 0, 0),
+             (0, 199, 319, 0), (50, 50, 50, 50), (-2000, -2000, 2200, 2000), (160, -1500, 161, 1500),
+             (-1500, 100, 1800, 101), (0, 0, 1, 199), (0, 0, 319, 1)]
+    cases += [(rnd.randint(-40, 360), rnd.randint(-40, 240), rnd.randint(-40, 360), rnd.randint(-40, 240)) for _ in range(n)]
+    cases += [(rnd.randint(0, 319), rnd.randint(0, 199), rnd.randint(0, 319), rnd.randint(0, 199)) for _ in range(n // 2)]
+    hang, bad, checked = [], [], 0
+    for x0, y0, x1, y1 in cases:
+        m.uc.mem_write(0xB0000, zero)
+        for off, v in ((X0, x0), (Y0, y0), (X1, x1), (Y1, y1)): m.wr16(off, v)
+        m.uc.mem_write(LIN + COL, b"\x07")
+        m.uc.reg_write(UC_X86_REG_ES, 0xB000)
+        m.uc.reg_write(UC_X86_REG_FLAGS, 0x202)             # DF clear, as DOS leaves it
+        m.exited = False
+        m.call(dl)
+        if not m.exited:
+            hang.append((x0, y0, x1, y1)); continue
+        mem = bytes(m.uc.mem_read(0xB0000, 64000 + 1536))
+        got = {(i % 320, i // 320) for i in (mo.start() for mo in _re.finditer(rb"[^\x00]", mem[:64000]))}
+        dx, dy = x1 - x0, y1 - y0
+        ok = mem[64000:] == bytes(1536)
+        # every pixel drawn must be within half a pixel of the true line; every on-screen
+        # step of the long axis must be drawn exactly once; endpoints (if visible) drawn
+        for (px, py) in got:
+            if abs(dx) >= abs(dy):
+                ty = y0 + dy * ((px - x0) / dx) if dx else y0
+                ok &= abs(py - ty) <= 0.5 + 1e-9 and min(x0, x1) <= px <= max(x0, x1)
+            else:
+                tx = x0 + dx * ((py - y0) / dy)
+                ok &= abs(px - tx) <= 0.5 + 1e-9 and min(y0, y1) <= py <= max(y0, y1)
+        # coverage: wherever the true line is unambiguously on-screen (0 <= y <= 199) the
+        # long-axis column/row must have been drawn. Exact half-pixel ties on the boundary are
+        # deliberately NOT required (Bresenham may round them either way).
+        if abs(dx) >= abs(dy):
+            cols = {px for px, py in got}
+            for k in range(abs(dx) + 1):
+                px = x0 + (k if dx >= 0 else -k); ty = y0 + (dy * (px - x0) / dx if dx else 0)
+                if 0 <= px <= 319 and 0 <= ty <= 199 and px not in cols: ok = False; break
+        else:
+            rows = {py for px, py in got}
+            for k in range(abs(dy) + 1):
+                py = y0 + (k if dy >= 0 else -k); tx = x0 + dx * (py - y0) / dy
+                if 0 <= py <= 199 and 0 <= tx <= 319 and py not in rows: ok = False; break
+        if (0 <= x0 <= 319 and 0 <= y0 <= 199): ok &= (x0, y0) in got
+        if (0 <= x1 <= 319 and 0 <= y1 <= 199): ok &= (x1, y1) in got
+        checked += 1
+        if not ok: bad.append((x0, y0, x1, y1))
+    check(not hang, f"never hangs: every line terminates ({checked} lines run) {hang[:3]}")
+    check(not bad, f"every pixel within 1/2 px of the true line, endpoints drawn, nothing outside the page ({len(bad)} bad) {bad[:3]}")
+
+def test_crtc():
+    print("\n== page flip: CRTC start-address register order ==")
+    com, lst = assemble([], "crtc")
+    m = Machine(com, 6)
+    seq = []
+    orig_out = m.on_out
+    def tap(mm, port, value):
+        if port == 0x3D4: seq.append(["idx", value])
+        elif port == 0x3D5 and seq and seq[-1][0] == "idx": seq[-1] = ("reg", seq[-1][1], value)
+    m.out_hooks.append(tap)
+    m.run(8)
+    regs = [(r[1], r[2]) for r in seq if r[0] == "reg" and r[1] in (0x0C, 0x0D)]
+    pairs = [(regs[i][1], regs[i + 1][1]) for i in range(0, len(regs) - 1, 2)]
+    check(all(regs[i][0] == 0x0C and regs[i + 1][0] == 0x0D for i in range(0, len(regs) - 1, 2)),
+          "each flip writes index 0Ch then 0Dh")
+    # VGA: 0Ch = Start Address HIGH, 0Dh = LOW. Page 0 = 0000h, page 1 = 4000h (65536 / 4, chain-4)
+    check(pairs[:4] == [(0x00, 0x00), (0x40, 0x00), (0x00, 0x00), (0x40, 0x00)],
+          f"(0Ch,0Dh) alternates (00h,00h) / (40h,00h): page 1 = start address 4000h  {pairs[:4]}")
+
 def test_palette():
     print("\n== palette: fixed colours, scene fade preserves hue ==")
     com, lst = assemble(force_scene(15), "pal")
@@ -424,12 +503,14 @@ def test_intro(frames=40):
           "IRQ1 masked while running, unmasked again at exit")
     check(m.uc.reg_read(UC_X86_REG_SP) == 0, "stack balanced: final RET popped exactly the DOS return word")
 
-TESTS = {"math": test_math, "palette": test_palette, "gfx": test_gfx, "music": test_music,
+TESTS = {"lines": test_lines, "crtc": test_crtc, "math": test_math, "palette": test_palette, "gfx": test_gfx, "music": test_music,
          "exit": test_exit_and_pacing, "scenes": test_scenes, "intro": test_intro}
 
 if __name__ == "__main__":
     which = sys.argv[1:] or list(TESTS)
     for w in which:
-        TESTS[w]()
+        if w == "lines" and len(sys.argv) > 2 and sys.argv[1] == "lines": TESTS[w](int(sys.argv[2]))
+        elif w.isdigit(): continue
+        else: TESTS[w]()
     print("\nRESULT:", "ALL PASS" if not fails else f"{len(fails)} FAILED:\n  - " + "\n  - ".join(fails))
     sys.exit(1 if fails else 0)

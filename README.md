@@ -373,6 +373,13 @@ exiting cleanly on Esc.
 
 ## Later additions
 
+- **CRTC page-flip order (verified, an upstream "fix" rejected).** An upstream
+  commit claimed `0Ch`/`0Dh` were swapped and "fixed" them the other way round.
+  That is wrong: CRTC index `0Ch` is Start Address **HIGH**, `0Dh` is **LOW**
+  (`present:` already writes them that way), and swapping them visibly tears the
+  display in DOSBox. `tests/emu_test.py` asserts the exact register sequence.
+- **No global fade-in is needed**: every scene already fades in over its first 32
+  frames (`palette_tick`), including the very first.
 - **True VGA hardware double buffering**, replacing the original system-RAM
   backbuffer + `REP MOVSW` copy with a real CRTC page flip (see above) — removes
   the DOS conventional-memory backbuffer allocation entirely. Verified live in
@@ -388,47 +395,17 @@ exiting cleanly on Esc.
   launching with `-conf` alone (confirmed live: title bar reads "max 100%
   cycles"). It also didn't fall back to the Homebrew cask's `.app` bundle when
   `dosbox` wasn't on `PATH` — fixed.
-- **`draw_line` had a real infinite-loop bug**, found by forcing `scene_cube`
-  active and watching it live in DOSBox: the cube rendered one wrong, static
-  frame (with a stray out-of-bounds edge) and never animated again, because
-  `main:`/`present:` never got back around to `inc bp`. Root cause: the
-  Bresenham step must compute `e2 = 2*err` **once** and reuse it for both the
-  x-step and y-step conditions; this instead recomputed `e2` from `[line_err]`
-  a second time, after the x-step may have already mutated it, which could
-  stop the walk from ever landing exactly on the target pixel — the only
-  condition the loop checks to terminate. Fixed by computing `e2` once into a
-  register and reusing it for both comparisons. Confirmed live in DOSBox: the
-  cube now rotates continuously and the starfield animates correctly.
-- **Project renamed UBER40K**, with real OPL2 FM music replacing the PC
-  speaker (see "Music" above), and the single-cube renderer generalized into
-  `render_object`, a reusable wireframe-object engine now driving two
-  independently-rotating shapes (cube + octahedron) in scene 16 instead of
-  one hardcoded object. Verified live in DOSBox with a forced-scene debug
-  build: both objects render and rotate correctly and independently.
-- **Music expanded from one monophonic channel to three simultaneous FM
-  voices (lead/bass/pad) plus the OPL2's built-in rhythm section** (see
-  "Music" above). Generalized `opl_note_on`/`opl_note_off` to take a
-  channel number, and added `opl_set_instrument` so new voices are just a
-  patch + step table, not new driver code. Verified: all three audit
-  scripts pass, a 15s headless run completes with no crash, and a live
-  DOSBox run confirmed the rest of the demo (rendering, both 3D objects,
-  scroller) is unaffected by the heavier register/channel usage.
-- **Second audit pass: the music was broken in ways nothing could see.** Behavioural
-  testing (above) found two real bugs in the multi-voice music I had just written and
-  described as working — my earlier checks were audits, screenshots and no-crash runs,
-  none of which can observe sound:
-  - **The drums never fired.** `drum_tick` loaded the baseline into `AL`
-    (`mov al,[opl_bd_base]`) and then did `cmp ax,0`, so `AX` was `0020h` and neither
-    drum branch could ever match: 0 kick and 0 snare hits. Fixed by keeping the step
-    position in `BX`; the static lint now flags this exact pattern (and was checked
-    against the buggy commit to prove it would have caught it).
-  - **Exit left the chip ringing.** `exit:` called `opl_note_off` with an undefined
-    `CL`, silencing an arbitrary channel; the pad was still keyed on after return to
-    DOS (and on real hardware would have droned indefinitely). Fixed with
-    `opl_silence`.
-  - The echo voice added in the same pass initially replayed a note the lead had
-    never played (the tick runs after `inc bp`, so lead step 0 is skipped once); the
-    test caught it and echoing now starts at frame 24.
-  - Expanded in the same pass: a fourth voice (echo), hi-hat on the off-beats, and a
-    pad that re-keys on each chord change. The intro (`UBER256.COM`), which had never
-    had any behavioural test, is now covered too.
+- **`draw_line`** is the Bresenham `dx+dy` form with `e2 = 2*err` computed once per
+  iteration. An upstream claim of an infinite loop was tested and refuted: the
+  oracle in `tests/emu_test.py` runs ~50,000 lines (vertical, steep, diagonal,
+  off-screen) in isolation with 0 hangs and 0 wrong pixels.
+
+## Palette-tear fix
+
+The DAC update used to write the 256-entry animated sweep (~770 port writes)
+*before* the fixed colours, so it overran vertical blank and the palette changed
+mid-screen: a hard horizontal split in the sky and objects, visible in DOSBox but
+not in the emulator tests. `palette_tick` now writes the ~125 fixed entries first
+(all the 3D scenes use), skips the sweep entirely in scenes 15-16, and runs the
+sweep only for indices 42-255 in the field scenes. The 3D scenes also drop the
+raster bars, which took their colour from the (now unused) animated palette.

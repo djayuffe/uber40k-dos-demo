@@ -1,5 +1,5 @@
 ; UBER DOS SHOWCASE 5.0 - polished procedural VGA demo
-; NASM syntax, DOS .COM, 386+, VGA, PC speaker. No external assets.
+; NASM syntax, DOS .COM, 386+, VGA, OPL2 FM (Sound Blaster/AdLib). No external assets.
 BITS 16
 ORG 100h
 
@@ -26,16 +26,17 @@ ORG 100h
 
 start:
     ; A .COM program owns ALL free conventional memory at launch (its PSP
-    ; block spans to the top of the DOS arena). Without shrinking that block
-    ; first, the later 64,000-byte AH=48h allocation below always fails with
-    ; "insufficient memory", since DOS has nothing left to give out.
+    ; block spans to the top of the DOS arena). This demo renders into video
+    ; RAM directly (true page flip, see present:) and needs no DOS backbuffer,
+    ; but it keeps its code, data tables and a small local stack in
+    ; conventional memory. Shrinking the PSP block to 16 KiB gives a bounded
+    ; footprint and keeps the local stack (stack_top) inside a known region
+    ; instead of floating somewhere in the default 64 KiB.
     mov ax,cs
     mov es,ax
     mov bx,1024                   ; 1024 paragraphs = 16 KiB: comfortably
     mov ah,4Ah                    ; covers code+data+stack (font, scroller,
-    int 21h                       ; cube tables) with room to spare. SETBLOCK
-                                   ; shrinks our own memory block so the AH=48h
-                                   ; call below has free memory to allocate from.
+    int 21h                       ; cube tables) with room to spare.
     mov ax,cs
     mov ss,ax
     mov sp,stack_top              ; switch onto our own stack inside that block
@@ -81,7 +82,7 @@ main:
     mov es,ax
     xor di,di
     ; Scene index = (frame >> SCENE_SHIFT) mod SCENE_COUNT. SCENE_COUNT is not
-    ; a power of two (17 scenes), so this uses DIV instead of an AND mask;
+    ; a power of two (18 scenes), so this uses DIV instead of an AND mask;
     ; the remainder (DL) is cached in cur_scene so scene_marker and
     ; music_tick read the same value instead of recomputing it separately.
     mov ax,bp
@@ -633,6 +634,12 @@ scene_finale:
 
 overlay:
     ; Three smooth raster bars, positions phase-locked to global frame clock.
+    ; The 3D scenes (15, 16) have their own sky and no animated palette, so the
+    ; bars (which take their colour from it) would be black stripes: skip them.
+    mov al,[cur_scene]
+    sub al,15
+    cmp al,2
+    jb .nobars
     mov ax,bp
     and ax,127
     add ax,30
@@ -647,6 +654,7 @@ overlay:
     and ax,31
     add ax,150
     call raster_line
+.nobars:
     call scene_marker
     call transition_wipe
     call scroll_draw              ; bottom sine-wave text scroller, drawn
@@ -672,6 +680,10 @@ present:
 .show0:
     xor bx,bx                     ; page0 (A000h) = byte offset 0
 .haveaddr:
+    ; VGA CRTC: index 0Ch = Start Address HIGH, index 0Dh = Start Address LOW
+    ; (IBM VGA reference / FreeVGA). Page 1 = byte offset 65536 = 4000h in
+    ; chain-4 units, so it is written as 0Ch=40h, 0Dh=00h. Swapping the two
+    ; would display page 0 shifted by 256 bytes and never show page 1.
     mov dx,3D4h
     mov al,0Ch
     out dx,al
@@ -701,7 +713,7 @@ exit:
     mov ax,4C00h
     int 21h
 
-; AX = y. ES still points at backbuffer here. Draws a soft 3-scanline glow
+; AX = y. ES still points at the page being rendered here. Draws a soft 3-scanline glow
 ; (dim/bright/dim) instead of one flat line, a classic fatter raster bar.
 raster_line:
     cmp ax,199
@@ -874,11 +886,41 @@ palette_tick:
     shl bx,1
     mov [pal_limit],bl
 .pal_begin:
+    ; Fixed entries go FIRST: they are all the 3D scenes use, and these ~125
+    ; port writes fit inside the vertical blank we are called in. The long
+    ; animated sweep (~640 writes) used to run first and spilled into the visible
+    ; frame, so the DAC changed mid-screen (a hard horizontal palette tear).
+    ; Fixed-colour entries (UI colours, the face-shading ramp, the sky gradient,
+    ; star shades) are rewritten here every frame, overriding whatever the
+    ; animated loop above just gave those indices, so they never drift. Entries
+    ; flagged 1 are scene art and follow the scene fade (clamped to pal_limit like
+    ; the animated colours, so a scene fades in/out as a whole); flag 0 is UI
+    ; (scroller, outlines) and stays at full brightness through the fade.
+    mov si,fixed_pal
+    mov cx,FIXED_PAL_COUNT
+.fp:
     mov dx,3C8h
-    xor al,al
+    lodsb
+    out dx,al                    ; select index
+    inc dx                       ; dx = 3C9h
+    lodsb
+    mov bl,al                    ; bl = fade flag
+    lodsb
+    call .fpout
+    lodsb
+    call .fpout
+    lodsb
+    call .fpout
+    loop .fp
+    mov al,[cur_scene]           ; 3D scenes (15, 16) need only the fixed
+    sub al,15                    ; entries: skip the sweep entirely
+    cmp al,2
+    jb .done
+    mov dx,3C8h
+    mov al,FIXED_PAL_COUNT+1
     out dx,al
     inc dx
-    xor cx,cx                    ; CL = exact palette index 0..255
+    mov cx,FIXED_PAL_COUNT+1     ; CL = palette index 42..255
 .pt:
     mov ax,cx
     add ax,bp
@@ -912,28 +954,7 @@ palette_tick:
 
     inc cl
     jnz .pt
-    ; Fixed-colour entries (UI colours, the face-shading ramp, the sky gradient,
-    ; star shades) are rewritten here every frame, overriding whatever the
-    ; animated loop above just gave those indices, so they never drift. Entries
-    ; flagged 1 are scene art and follow the scene fade (clamped to pal_limit like
-    ; the animated colours, so a scene fades in/out as a whole); flag 0 is UI
-    ; (scroller, outlines) and stays at full brightness through the fade.
-    mov si,fixed_pal
-    mov cx,FIXED_PAL_COUNT
-.fp:
-    mov dx,3C8h
-    lodsb
-    out dx,al                    ; select index
-    inc dx                       ; dx = 3C9h
-    lodsb
-    mov bl,al                    ; bl = fade flag
-    lodsb
-    call .fpout
-    lodsb
-    call .fpout
-    lodsb
-    call .fpout
-    loop .fp
+.done:
     ret
 .fpout:
     test bl,bl
@@ -1078,7 +1099,7 @@ sin16:
 ; Rotate one 3D point (cube_px,cube_py,cube_pz) by cube_angle_y (around the
 ; Y axis) then cube_angle_x (around the X axis), using the shared sintab
 ; (cos(a) = sin((a+64)&255), a quarter-turn ahead in the same table), then
-; project it orthographically to screen space in (cube_sx,cube_sy).
+; project it in perspective to screen space in (cube_sx,cube_sy).
 cube_rotate_project:
     pusha
     mov ax,[cube_angle_y]
@@ -1737,7 +1758,7 @@ render_object:
 
 ; General-purpose Bresenham line draw between (line_x0,line_y0) and
 ; (line_x1,line_y1) in line_color, with per-pixel bounds checks so an
-; out-of-range projected point can never write outside the backbuffer.
+; out-of-range projected point can never write outside the page.
 draw_line:
     pusha
     mov ax,[line_x1]
