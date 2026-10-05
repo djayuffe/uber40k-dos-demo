@@ -59,7 +59,7 @@ is last so a wipe can never cover it.
   brightness during a fade; scene-art entries are scaled by `v*(limit+1)/64`.
   Scaling, not clamping, keeps hue (clamping `(20,8,28)` at 16 gives
   `(16,8,16)`).
-- **Animated sweep second**, indices 42-255 only, skipped entirely in scenes 15-16.
+- **Animated sweep second**, indices 42-255 only, skipped entirely in scenes 15-16. In the field scenes it is split across four frames (one 64-index block per frame, chosen by `bp`) because the full sweep does not fit vertical blank; during a fade the whole range is rewritten, since stale blocks would show as brightness steps.
 
 Order matters: the sweep is ~640 port writes, longer than vertical blank. When it
 ran first the DAC changed part-way down the screen (a visible horizontal tear

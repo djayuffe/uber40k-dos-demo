@@ -131,18 +131,38 @@ main:
 
 ; 1: interference plasma - cheap arithmetic, continuously phase animated.
 scene_plasma:
+    ; A genuine sine plasma: three sine terms (a column wave, a row wave and a
+    ; diagonal one) summed and mapped into palette indices 42..255, the part of
+    ; the DAC that palette_tick animates, so the colours also flow over time.
     xor dx,dx
-.py: xor cx,cx
-.px:
-    mov ax,cx
-    add ax,bp
-    xor ax,dx
+.py:
     mov bx,dx
     shl bx,1
+    add bx,dx                    ; 3*y
+    mov ax,bp
+    shl ax,1
+    add bx,ax
+    and bx,255
+    movsx ax,byte [sintab+bx]
+    mov [plasma_row],ax
+    xor cx,cx
+.px:
+    mov bx,cx
+    shl bx,1
+    add bx,bp
+    and bx,255
+    movsx ax,byte [sintab+bx]    ; column wave
+    add ax,[plasma_row]          ; row wave
+    mov bx,cx
+    add bx,dx
+    add bx,bp
+    and bx,255
+    movsx bx,byte [sintab+bx]    ; diagonal wave
     add ax,bx
-    xor al,ah
-    add al,cl
-    rol al,1
+    add ax,384                   ; -381..381 -> 3..765
+    imul ax,7
+    sar ax,5                     ; 0..167
+    add ax,FIXED_PAL_COUNT+1
     stosb
     inc cx
     cmp cx,320
@@ -151,6 +171,7 @@ scene_plasma:
     cmp dx,200
     jb .py
     jmp overlay
+plasma_row dw 0
 
 ; 2: perspective-ish radial tunnel. Heavy scene, intentionally isolated.
 scene_tunnel:
@@ -928,11 +949,28 @@ palette_tick:
     sub al,15                    ; entries: skip the sweep entirely
     cmp al,2
     jb .done
+    ; The sweep is spread over four frames (a 64-index block per frame, chosen
+    ; by bp) so each frame's DAC traffic still fits vertical blank; the colours
+    ; only drift one step per frame, so a block that is up to 3 frames stale is
+    ; invisible. While a scene fades the whole range is rewritten instead, since
+    ; stale blocks would show as brightness steps (the screen is dark then).
+    mov byte [sweep_mask],255
+    cmp byte [pal_limit],63
+    jne .sw_full
+    mov byte [sweep_mask],63
+    mov ax,bp
+    and al,3
+    mov cl,6
+    shl al,cl                    ; AL = first index of this frame's block
+    jnz .sw_go
+.sw_full:
+    mov al,FIXED_PAL_COUNT+1     ; block 0 / full sweep start after the fixed entries
+.sw_go:
+    mov cl,al
     mov dx,3C8h
-    mov al,FIXED_PAL_COUNT+1
     out dx,al
     inc dx
-    mov cx,FIXED_PAL_COUNT+1     ; CL = palette index 42..255
+    xor ch,ch                    ; CX = palette index
 .pt:
     mov ax,cx
     add ax,bp
@@ -965,6 +1003,7 @@ palette_tick:
     out dx,al
 
     inc cl
+    test cl,[sweep_mask]
     jnz .pt
 .done:
     ret
@@ -2585,6 +2624,7 @@ poly_max times 200 dw 0
 
 ; --- 3D starfield scene state ---
 star_idx dw 0
+sweep_mask db 255
 star_hit db 0
 bounce_on db 0
 bnc_r dw 0

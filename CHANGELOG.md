@@ -4,6 +4,16 @@ Releases are tagged `vX.Y.Z`; pushing a tag runs `.github/workflows/release.yml`
 which builds, audits, tests and attaches `UBER256.COM`, `UBERSHOW.COM` and
 `SHA256SUMS`. The notes for a tag are taken from its section below.
 
+## [1.0.1] - 2026-10-05
+
+### Fixed
+- **Palette tear in the field scenes**: the 214-entry animated sweep still
+  overran vertical blank in scenes 1-15 and 18, splitting the screen into
+  horizontal colour bands. The sweep is now spread over four frames (one 64-index
+  block per frame) and done in full only while a scene fades.
+- **Scene 1 is a real plasma**: three summed sine waves mapped into the animated
+  palette range, replacing an XOR pattern that rendered as tiled noise.
+
 ## [1.0.0] - 2026-10-05
 
 First tagged release of the 40K edition.
