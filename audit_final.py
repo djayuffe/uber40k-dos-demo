@@ -16,9 +16,10 @@ required=[
 # OPL2 FM music (Sound Blaster / AdLib, fixed port 388h/389h): three
 # simultaneous voices (lead/bass/pad) plus the built-in rhythm section
 "opl_write:","opl_init:","opl_note_on:","opl_note_off:","mov dx,388h",
-"opl_set_instrument:","chan_op1 db","chan_op2 db","bass_tick:","pad_tick:",
-"drum_tick:","inst_lead db","inst_bass db","inst_pad","inst_bd","inst_sd",
-"mov ah,0BDh","opl_silence:","echo_tick:","inst_echo db",
+"opl_set_instrument:","chan_op1 db","chan_op2 db","lead_step:","bass_step:","pad_step:",
+"echo_step:","drum_step:","lead_notes:","bass_pat db","pad_chords dw","fill_poly:","edge_rows:",
+"render_faces:","sincos16:","put_pixel:","fill_sky:","star_pass:","fixed_pal:","inst_lead db","inst_bass db","inst_pad","inst_bd","inst_sd",
+"mov ah,0BDh","opl_silence:","inst_echo db",
 ]
 for x in required:
     if x not in s: errors.append("missing: "+x)
@@ -28,8 +29,8 @@ if len(scenes)!=18: errors.append(f"expected 18 scenes, found {len(scenes)}")
 SPECIAL = {
     # scene_cube renders two objects (cube + octahedron) through the shared
     # render_object engine, which is what actually calls draw_line.
-    "scene_cube:": ("rep stosw", "call render_object"),
-    "scene_starfield:": ("rep stosw", "idiv word [star_z]"),
+    "scene_cube:": ("call fill_sky", "call render_object"),
+    "scene_starfield:": ("call fill_sky", "call star_pass"),
 }
 for label in scenes:
     start=s.index(label)
@@ -49,6 +50,9 @@ if not re.search(r"^exit:\n\s+call opl_silence", s, re.M):
     errors.append("exit: must call opl_silence first (else the OPL2 rings on after return to DOS)")
 if "call opl_silence" not in s.split("opl_init:")[1].split("ret")[0]:
     errors.append("opl_init must start from a silenced chip")
+pres = s[s.index("\npresent:\n"):s.index("    inc bp\n    call music_tick")]
+if not (pres.index("out dx,al") < pres.index("call wait_vsync") < pres.index("call palette_tick")):
+    errors.append("present: must write the CRTC start address before wait_vsync, palette after")
 if "mov es,ax\n    xor di,di" not in s:
     errors.append("ES page-segment load missing at main:")
 if errors:

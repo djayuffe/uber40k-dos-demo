@@ -13,7 +13,7 @@ a 40,960-byte budget — it currently runs at roughly a tenth of that.
 | File | Purpose | Size | CPU | Video | Audio |
 |---|---|---|---|---|---|
 | `intro256.asm` | strict ≤256-byte sizecoded intro | 70 bytes | 386+ | VGA mode 13h | none (silent) |
-| `showcase.asm` | full multi-scene production demo | ~5.0 KB | 386+ | VGA mode 13h | OPL2 FM (Sound Blaster/AdLib) |
+| `showcase.asm` | full multi-scene production demo | ~7.4 KB | 386+ | VGA mode 13h | OPL2 FM (Sound Blaster/AdLib) |
 
 ## Quick start
 
@@ -69,23 +69,33 @@ On top of every scene:
 - **A symmetric shutter transition** (black bars closing/opening) layered on top.
 - **A colour-cycling sine-wave text scroller** along the bottom (see below).
 
-### 3D engine: cube + octahedron (scene 16)
+### 3D engine: solid shaded cube + octahedron (scene 16)
 
-The one non-procedural-field scene is driven by a genuine, reusable 3D engine rather
-than one hardcoded shape. `render_object` takes a vertex list, an edge list and a
-screen-space offset, and does the rest: two-axis rotation (Y then X) using a shared
-256-entry sine table (`cos(a) = sin(a+64)`, a quarter-turn lookup, so one table serves
-both), a **true perspective projection** (divide by distance from the eye, not
-orthographic — nearer faces are visibly larger), and a from-scratch bounds-checked
-Bresenham line routine for every edge. Edges are depth-cued: the nearer ones per
-object render bright white, the farther ones dim grey.
+The 3D scene runs on a small reusable engine, not one hardcoded shape. `render_object`
+takes a vertex list, a face list and a screen offset and does the rest:
 
-The scene calls `render_object` twice with different data and different rotation
-rates — a cube and an octahedron, spinning independently and offset to opposite
-sides of the screen — to actually demonstrate it's an engine and not just "the cube
-scene with extra steps". Adding a third shape is a vertex/edge table and four more
-lines of calling code, not a new renderer. All of it — rotation, projection, line
-draw — is 16-bit fixed-point integer math; no FPU, no floating point.
+- **Rotation + perspective** — two-axis rotation from a 16-bit angle, then a true
+  perspective divide. `sincos16` linearly interpolates a 256-entry ±127 sine table, so
+  the pose changes continuously on **every** frame (an earlier version indexed the table
+  directly at half a step per frame, which updated every other frame: a visible 35 Hz
+  judder on a 70 Hz display).
+- **Backface culling** — each face's normal is computed from the *rotated* vertices and
+  tested against the real eye position (not just the sign of normal-Z, or faces seen at a
+  glancing angle would drop out).
+- **Flat lighting** — one directional light, `n·L / (|n||L|)` in 32-bit integer maths,
+  mapped onto a 16-step shading ramp reserved in the DAC. Every face of a regular solid
+  has the same normal length, so it divides by one precomputed constant, not a square root.
+- **Scanline polygon fill** — `fill_poly` walks each edge once in 8.8 fixed point,
+  recording left/right extents per row, then fills the spans with `REP STOSB`; clipped to
+  the page on all sides. Faces are outlined with the Bresenham line routine.
+- **Two render modes** — solid for three quarters of every scene, plain wireframe (the
+  original renderer) for the rest.
+
+The face tables are *generated and orientation-checked by script* (the cross product of
+each face's first three vertices must point outward), because culling and lighting both
+silently depend on that winding being right. The scene draws a cube and an octahedron
+with different rotation rates, over a **night-sky gradient with the star field behind
+them**, so it reads as a place rather than two shapes on black.
 
 ### 3D starfield (scene 17)
 
@@ -95,8 +105,9 @@ orthographic). Every star's position is computed fresh each frame purely as a
 function of the frame clock and its own index — no persistent per-star state to
 track: Z counts down from far to near and wraps back to far on its own, so stars
 continuously fly past and recycle forever without ever needing to be "respawned"
-by special-case code. Closer stars render bright white, farther ones dim grey,
-the same depth-cueing idea as the cube's edges.
+by special-case code. Shade steps with depth in four levels (dim grey, mid grey, white, warm white) and the
+nearest stars are drawn 2×2, so they read as closer rather than just brighter. The same
+`star_pass` also runs behind the cube scene.
 
 ### Sine-wave text scroller
 
@@ -105,7 +116,9 @@ scroller message actually uses) rendered column-by-column along the bottom 8
 scanlines, with each column's vertical position offset by the same sine table the
 cube uses, for the classic wavy-scroller look. The foreground colour cycles through
 a small fixed rainbow (red/yellow/green/cyan) both along the message and over time,
-so it doesn't just sit as flat white. Two DAC indices are reserved as fixed pure
+so it doesn't just sit as flat white. Only lit pixels are drawn, each with a one-pixel
+black drop shadow, so the sky shows between the letters (it used to sit on a solid black
+band); it advances one pixel every frame. Two DAC indices are reserved as fixed pure
 black/white (and four more for the rainbow) so the scroller and cube stay legible
 regardless of what the main per-scene palette animation is doing elsewhere — see
 "Fixed vs. animated palette" below.
@@ -116,35 +129,36 @@ regardless of what the main per-scene palette animation is doing elsewhere — s
 (`388h`/`389h`) — the same chip every Sound Blaster card carries for AdLib
 compatibility, so no `BLASTER` environment-variable base-port detection is needed at
 all; this works identically on any SB card and on a plain AdLib. It uses the chip
-about as fully as a sizecoded driver reasonably can: three independent melodic
-voices plus the chip's built-in rhythm section, not one monophonic beep.
+about as fully as a sizecoded driver reasonably can: four melodic voices plus the chip's
+built-in rhythm section, arranged as a chord progression rather than a loop.
 
-**Four simultaneous FM voices**, each with its own instrument patch and its own
-step sequencer, all still perfectly phase-locked to the single global frame counter:
-- **Lead** (channel 0) — the original 32-step A-minor-pentatonic call-and-response
-  phrase: a clean two-operator FM voice, fast attack, moderate decay.
-- **Bass** (channel 1) — a sparse low-register pattern (mostly rests, roots landing
-  on the beat) with a punchier, more harmonically rich patch (full modulator depth,
-  a half-sine carrier for extra bite), outlining the harmony under the lead.
-- **Pad** (channel 2) — a slow sustained chord tone (true-sustain envelope, soft
-  volume) that changes every 128 frames, cycling through A-minor triad tones. Each
-  change keys off then on again: re-keying a held note would only glide the pitch,
-  with no new swell.
-- **Echo** (channel 3) — the lead's note from two steps ago, replayed softer: a
-  tape-delay shimmer that turns one melody into a layered line. It stays in the
-  lead's octave on purpose (see "Transposition headroom" below).
+**A real song form, not a loop.** Everything runs from one global step counter
+(8 frames per step, 32 steps per bar) over a **4-bar chord progression — Am | C | G | Em**
+(~15 s per pass, versus the 3.7 s identical loop this used to be). Every note stays inside
+A minor pentatonic, which fits all four chords, so melody and harmony cannot clash:
 
-`opl_set_instrument` is a generic routine — channel number plus an 11-byte patch
-(operator characteristics, levels, envelopes, waveforms, feedback/connection) — so
-adding a voice is a new patch and a new step table, not new driver code; the
-channel-to-operator register mapping (`chan_op1`/`chan_op2`) is the standard OPL2
-layout, so it works for any of the chip's 9 channels. `opl_note_on`/`opl_note_off`
-take the channel number the same way.
+- **Lead** (channel 0) — four *different* 32-step phrases, one per chord, landing on that
+  chord's tones on the strong beats; the last ends on A to lead back into the first.
+- **Bass** (channel 1) — one root/octave/rest pattern played on each bar's chord root
+  (A, C, G, E).
+- **Pad** (channel 2) — the chord's tones, one every 8 steps. Each change keys off then on,
+  so it gets a real swell instead of just gliding.
+- **Echo** (channel 3) — the lead's note from two steps ago, replayed softer: a tape-delay
+  shimmer. It stays in the lead's octave on purpose (see "Transposition headroom").
 
-**Rhythm section**: `drum_tick` drives the OPL2's built-in percussion mode (register
-`0xBDh`, which repurposes channels 6-7's operators as dedicated drum voices): bass
-drum on the downbeat of every 8-step group, snare on the backbeat, hi-hat on the
-off-beats — locked to the same step grid as the lead.
+**True FM.** The patches set the connection bit to 0, so the modulator actually drives the
+carrier. (An earlier version set it to 1, which on the OPL2 means *additive*: two sine
+waves simply summed, so the "FM" voices were never FM at all and the modulator level
+controlled nothing useful.) The lead and echo carry feedback; the lead and pad have vibrato.
+
+`opl_set_instrument` is a generic routine — channel number plus an 11-byte patch — so a new
+voice is a patch and a step table, not new driver code; the channel-to-operator map
+(`chan_op1`/`chan_op2`) is the standard OPL2 layout and works for all 9 channels.
+
+**Rhythm section** (the chip's built-in percussion mode, register `0BDh`): kick on the
+downbeat, snare on the backbeat, hi-hat on the off-beats; a **snare + tom fill** through the
+last 8 steps of bar 4; a **cymbal crash** on the first step of bar 1 marking the top of the
+form.
 
 **Clean shutdown**: a real Sound Blaster/AdLib keeps sounding whatever was last keyed
 on after the program returns to DOS, so `opl_silence` keys off all 9 channels and
@@ -166,12 +180,16 @@ note already sits at block 5, so two act transpositions reach the field's maximu
 
 ### Fixed vs. animated palette
 
-`palette_tick` drives one continuous animated formula across all 256 DAC entries
-every frame — which looks great for the procedural fields, but means no single
-index is guaranteed to stay a consistent colour from frame to frame. The scroller
-and cube need reliable contrast, so DAC indices **1–7 are reserved** immediately
-after the main animated loop runs each frame, overriding whatever it assigned them:
-1=black, 2=white, 3=dim grey (cube depth cue), 4–7=a small fixed rainbow (scroller).
+`palette_tick` drives one continuous animated formula across all 256 DAC entries every frame,
+which suits the procedural fields but guarantees no index keeps a stable colour. So a table
+of **fixed colours is rewritten over it every frame**: UI (1 black, 2 white, 3 dim grey,
+4-7 the scroller rainbow), the 16-step shading ramp for solid faces (8-23), the 16-step sky
+gradient (24-39) and two star shades (40-41).
+
+Entries are flagged as UI or scene art. UI stays at full brightness through a scene fade;
+scene art fades **by scaling** (`v·(limit+1)/64`), not by clamping each component. A clamp
+shifts hue (`(20,8,28)` clamped at 16 becomes `(16,8,16)`: the maroon sky that showed up
+mid-fade before this was fixed); scaling only darkens.
 
 ## `UBER256.COM` — the strict intro
 
@@ -211,6 +229,12 @@ displayed, then `present:` flips the CRTC start-address register (port `3D4h`
 indices `0Ch`/`0Dh`, in chain-4 units of 4 bytes) to display it — a genuine
 hardware page flip, not a blit. This removes the need for any DOS conventional-
 memory backbuffer allocation entirely.
+
+**Flip order matters.** `present:` writes the new start address *first*, then waits for
+retrace, and only then does the palette update and draws into the other page. It used to
+wait for retrace and write the address afterwards: on hardware that latches the start
+address at retrace start the flip then lands a frame late and the next frame is drawn into
+the page still being scanned (visible tearing). DOSBox latches at frame start, which hid it.
 
 A `.COM` program still owns *all* free conventional memory at launch by default
 (its PSP block spans to the top of the DOS arena), which matters here because the
@@ -267,14 +291,27 @@ Three layers, because each catches things the others can't:
 1. **Static audits** (`audit.py`, `audit_final.py`, `release_audit.py`, run by
    `./build.sh`) — structure and invariants in the source text, including a narrow
    lint for a 16-bit compare on `AX` straight after an 8-bit write to `AL`/`AH`.
-2. **Behavioural tests** (`tests/run_tests.sh`) — runs the *real, built* `.COM` files
-   in an emulated 16-bit CPU (Unicorn), trapping port I/O and DOS/BIOS interrupts, and
-   asserts on what the program actually does to the hardware: which OPL2 registers it
-   writes and when, that every one of the 18 scenes executes without leaving its page
-   or unbalancing the stack, that every note stays in an audible range at every
-   transposition level, and that both programs exit cleanly (IRQ1 restored, chip
-   silenced, stack balanced). ~2.5 minutes; needs Python 3 and installs `unicorn`
-   into a throwaway `./.venv`.
+2. **Behavioural tests** (`tests/run_tests.sh`) — runs the *real, built* `.COM` files in an
+   emulated 16-bit CPU (Unicorn), trapping port I/O and DOS/BIOS interrupts. It can build
+   variants of the program (forced scene, faster scene clock), call individual routines in
+   isolation, and snapshot the displayed page. What it asserts:
+   - **music** — what the OPL2 receives and when, checked against music theory: every note
+     is in tune (<15 cents) and in A minor pentatonic; the bass plays only each bar's chord
+     root and the pad only chord tones; the four bars are four different phrases and the
+     form repeats exactly; kick/snare/hat/tom/cymbal land only where intended; the chip is
+     fully silenced at exit.
+   - **graphics** — solid faces are drawn and lit differently, wireframe mode draws none,
+     back faces are culled, the sky is a monotone gradient, rotation advances by a constant
+     step *every* frame.
+   - **math, in isolation** — `sincos16` against `math.sin`/`math.cos` (±0.91 on a ±127
+     scale, no discontinuity at the table wrap); `fill_poly` against known geometry (a
+     triangle and a rectangle fill their *exact* pixel counts; full-screen, off-screen,
+     partly-clipped and degenerate polygons never touch memory outside the page).
+   - **palette** — the fade is exactly proportional at every frame and UI colours never fade.
+   - **robustness** — all 18 scenes execute without leaving their page or unbalancing the
+     stack; every note stays audible at every transposition; the frame loop flips before it
+     waits; both programs exit cleanly (IRQ1 restored, stack balanced).
+   Needs Python 3; installs `unicorn` into a throwaway `./.venv`; takes a few minutes.
 3. **Live DOSBox** (`./run-dosbox.sh`) — the real target, for what the other two can't
    judge: does it look right.
 

@@ -14,6 +14,13 @@ ORG 100h
 %define CUBE_FG_DIM 3             ; fixed dim grey, far-edge wireframe colour
 %define CUBE_EYE_DIST 160         ; perspective-divide distance from the eye
 %define CUBE_PROJ_SCALE 110       ; perspective projection scale factor
+%define SHADE_BASE 8              ; DAC 8..23: 16-step shading ramp for solid faces
+%define SKY_BASE 24               ; DAC 24..39: night-sky gradient, 16 steps
+%define STAR_MID 40               ; DAC 40: mid-grey star
+%define STAR_NEAR 41              ; DAC 41: warm-white nearest stars
+%define LIGHT_X -4                ; light direction (toward the light), |L| = 14
+%define LIGHT_Y -6
+%define LIGHT_Z -12
 %define STAR_COUNT 32             ; stars in scene_starfield
 %define STAR_SCALE 20             ; starfield perspective projection scale
 
@@ -24,7 +31,7 @@ start:
     ; "insufficient memory", since DOS has nothing left to give out.
     mov ax,cs
     mov es,ax
-    mov bx,512                    ; 512 paragraphs = 8192 bytes: comfortably
+    mov bx,1024                   ; 1024 paragraphs = 16 KiB: comfortably
     mov ah,4Ah                    ; covers code+data+stack (font, scroller,
     int 21h                       ; cube tables) with room to spare. SETBLOCK
                                    ; shrinks our own memory block so the AH=48h
@@ -523,41 +530,57 @@ scene_vortex:
 ; opposite sides of the screen, so they visibly rotate differently rather
 ; than looking like one re-skinned object.
 scene_cube:
-    mov ax,CUBE_BG
-    mov ah,al
-    mov cx,32000
-    rep stosw
+    call fill_sky
+    call star_pass
 
+    ; Solid and shaded for three quarters of every 512-frame scene, plain
+    ; wireframe for the last quarter -- the same engine, two render modes.
     mov ax,bp
-    shr ax,1
-    and ax,255
-    mov [cube_angle_y],ax
+    and ax,180h
+    cmp ax,180h
+    mov byte [obj_solid],1
+    jne .sc_mode
+    mov byte [obj_solid],0
+.sc_mode:
+
+    mov cl,7                       ; angle = frame * 128 (0.5 table step per
+    mov ax,bp                      ; frame, as before) but kept as a 16-bit
+    shl ax,cl                      ; value so sincos16 can interpolate: the
+    mov [cube_angle_y],ax          ; pose now changes EVERY frame, not every
+    mov cl,6                       ; other one
     mov ax,bp
-    shr ax,2
-    and ax,255
+    shl ax,cl
     mov [cube_angle_x],ax
     mov word [obj_verts_ptr],cube_verts
     mov word [obj_edges_ptr],cube_edges
+    mov word [obj_faces_ptr],cube_faces
     mov word [obj_vbytes],8*6
     mov word [obj_ebytes],12*2
+    mov word [obj_fbytes],6*4
+    mov eax,[cube_norml]
+    mov [obj_norml],eax
     mov word [obj_offset_x],-70
     mov word [obj_offset_y],0
     mov byte [obj_fg],CUBE_FG
     mov byte [obj_fg_dim],CUBE_FG_DIM
     call render_object
 
+    mov cl,6
     mov ax,bp
-    shr ax,2
-    and ax,255
+    shl ax,cl
     mov [cube_angle_y],ax
+    mov cl,7
     mov ax,bp
-    shr ax,1
-    and ax,255
+    shl ax,cl
     mov [cube_angle_x],ax
     mov word [obj_verts_ptr],octa_verts
     mov word [obj_edges_ptr],octa_edges
+    mov word [obj_faces_ptr],octa_faces
     mov word [obj_vbytes],6*6
     mov word [obj_ebytes],12*2
+    mov word [obj_fbytes],8*4
+    mov eax,[octa_norml]
+    mov [obj_norml],eax
     mov word [obj_offset_x],70
     mov word [obj_offset_y],0
     mov byte [obj_fg],CUBE_FG
@@ -572,74 +595,8 @@ scene_cube:
 ; by Z exactly like scene_cube's projection, just for points instead of
 ; wireframe edges, and brightens as a star gets closer.
 scene_starfield:
-    mov ax,CUBE_BG
-    mov ah,al
-    mov cx,32000
-    rep stosw
-
-    mov word [star_idx],0
-    xor si,si                      ; si = star index * 2 (word table offset)
-.st_loop:
-    mov ax,bp
-    mov cx,3
-    mul cx                         ; ax = (frame*3) mod 65536 -- truncation
-                                    ; just means one harmless seam every
-                                    ; 65536 frames (~15 min), never visible
-    mov cx,[star_idx]
-    imul cx,37                     ; stagger each star's phase
-    add ax,cx
-    xor dx,dx
-    mov cx,240
-    div cx                         ; dx = phase 0..239
-    mov ax,255
-    sub ax,dx                      ; ax = Z: 255 (far) down to 16 (near),
-    mov [star_z],ax                ; wraps back to far when phase resets
-
-    mov ax,[star_base_x+si]
-    mov cx,STAR_SCALE
-    imul ax,cx
-    cwd
-    idiv word [star_z]
-    add ax,160
-    mov [star_sx],ax
-
-    mov ax,[star_base_y+si]
-    mov cx,STAR_SCALE
-    imul ax,cx
-    cwd
-    idiv word [star_z]
-    add ax,100
-    mov [star_sy],ax
-
-    mov byte [star_color],CUBE_FG_DIM
-    mov ax,[star_z]
-    cmp ax,80
-    jg .plot
-    mov byte [star_color],CUBE_FG
-.plot:
-    mov ax,[star_sy]
-    cmp ax,0
-    jl .st_skip
-    cmp ax,199
-    jg .st_skip
-    mov bx,[star_sx]
-    cmp bx,0
-    jl .st_skip
-    cmp bx,319
-    jg .st_skip
-    mov cx,320
-    mul cx
-    add ax,bx
-    mov di,ax
-    mov al,[star_color]
-    stosb
-.st_skip:
-    add si,2
-    mov ax,[star_idx]
-    inc ax
-    mov [star_idx],ax
-    cmp ax,STAR_COUNT
-    jb .st_loop
+    call fill_sky
+    call star_pass
     jmp overlay
 
 ; 18: finale combines time, coordinates and coarse radial energy.
@@ -697,12 +654,12 @@ overlay:
                                    ; covered by the scene-cut shutter bars
 
 present:
-    call wait_vsync
-    call palette_tick
-    ; Flip: show the page we just finished rendering into (show_page),
-    ; and flip vga_page so next frame renders into the other, now-hidden
-    ; page. wait_vsync above already caught the start of retrace, so this
-    ; CRTC update lands inside vertical blank, same as the old blit did.
+    ; Page flip, in the order that is correct however the CRTC latches its start
+    ; address: write the new start address FIRST, then wait for retrace, and only
+    ; then draw into the other page. (This used to wait for retrace and write the
+    ; address afterwards: on hardware that latches at retrace start the flip then
+    ; lands a frame late, and the next frame is drawn into the page still being
+    ; scanned -- visible tearing. DOSBox latches at frame start, which hid it.)
     mov al,[vga_page]
     mov [show_page],al
     xor al,1
@@ -727,6 +684,8 @@ present:
     inc dx
     mov al,bl
     out dx,al
+    call wait_vsync               ; new page is now what's on screen
+    call palette_tick             ; DAC writes happen inside vertical blank
     inc bp
     call music_tick
     call key_escape
@@ -857,8 +816,8 @@ transition_wipe:
     xor di,di
 .tw_top:
     mov cx,320
-    xor al,al
-    rep stosb
+    mov al,1                      ; fixed black (DAC 1); index 0 belongs to the
+    rep stosb                     ; animated palette and showed up as dull olive
     dec dx
     jnz .tw_top
     mov ax,bx
@@ -871,8 +830,8 @@ transition_wipe:
     mov dx,bx
 .tw_bottom:
     mov cx,320
-    xor al,al
-    rep stosb
+    mov al,1                      ; fixed black (DAC 1); index 0 belongs to the
+    rep stosb                     ; animated palette and showed up as dull olive
     dec dx
     jnz .tw_bottom
 .tw_done:
@@ -953,77 +912,38 @@ palette_tick:
 
     inc cl
     jnz .pt
-    ; Reserve DAC indices 1 (black) and 2 (white) as fixed, high-contrast
-    ; colours that the animated loop above never gets the last word on.
-    ; Without this, the scroller/cube UI colours are just two more indices
-    ; in the same one continuous animated formula as everything else, so
-    ; they can (and did, visibly) drift to similar tones and lose contrast.
+    ; Fixed-colour entries (UI colours, the face-shading ramp, the sky gradient,
+    ; star shades) are rewritten here every frame, overriding whatever the
+    ; animated loop above just gave those indices, so they never drift. Entries
+    ; flagged 1 are scene art and follow the scene fade (clamped to pal_limit like
+    ; the animated colours, so a scene fades in/out as a whole); flag 0 is UI
+    ; (scroller, outlines) and stays at full brightness through the fade.
+    mov si,fixed_pal
+    mov cx,FIXED_PAL_COUNT
+.fp:
     mov dx,3C8h
-    mov al,1
-    out dx,al                    ; select index 1
-    inc dx                        ; dx=3C9h, the data port
-    xor al,al
+    lodsb
+    out dx,al                    ; select index
+    inc dx                       ; dx = 3C9h
+    lodsb
+    mov bl,al                    ; bl = fade flag
+    lodsb
+    call .fpout
+    lodsb
+    call .fpout
+    lodsb
+    call .fpout
+    loop .fp
+    ret
+.fpout:
+    test bl,bl
+    jz .fo_emit
+    mov ah,[pal_limit]            ; fade by SCALING (v * (limit+1) / 64), not by
+    inc ah                        ; clamping each component: a clamp turns e.g.
+    mul ah                        ; (20,8,28) into (16,8,16) and shifts the hue
+    shr ax,6                      ; (the maroon sky seen mid-fade); scaling just
+.fo_emit:                         ; darkens it. Exact (v) when limit = 63.
     out dx,al
-    out dx,al
-    out dx,al                    ; index 1 = pure black (0,0,0)
-    mov dx,3C8h
-    mov al,2
-    out dx,al                    ; select index 2
-    inc dx
-    mov al,63
-    out dx,al
-    out dx,al
-    out dx,al                    ; index 2 = pure white (63,63,63)
-    mov dx,3C8h
-    mov al,3
-    out dx,al                    ; select index 3
-    inc dx
-    mov al,24
-    out dx,al
-    out dx,al
-    out dx,al                    ; index 3 = fixed dim grey, for depth cueing
-    ; indices 4..7: a small fixed rainbow for the scroller (red, yellow,
-    ; green, cyan), so its colour-cycle doesn't fight the animated palette.
-    mov dx,3C8h
-    mov al,4
-    out dx,al
-    inc dx
-    mov al,63
-    out dx,al
-    xor al,al
-    out dx,al
-    xor al,al
-    out dx,al                    ; index 4 = red
-    mov dx,3C8h
-    mov al,5
-    out dx,al
-    inc dx
-    mov al,63
-    out dx,al
-    mov al,63
-    out dx,al
-    xor al,al
-    out dx,al                    ; index 5 = yellow
-    mov dx,3C8h
-    mov al,6
-    out dx,al
-    inc dx
-    xor al,al
-    out dx,al
-    mov al,50
-    out dx,al
-    xor al,al
-    out dx,al                    ; index 6 = green
-    mov dx,3C8h
-    mov al,7
-    out dx,al
-    inc dx
-    xor al,al
-    out dx,al
-    mov al,55
-    out dx,al
-    mov al,63
-    out dx,al                    ; index 7 = cyan
     ret
 .limit:
     cmp al,[pal_limit]
@@ -1072,39 +992,29 @@ scroll_draw:
     and ax,255
     mov di,ax
     movsx ax,byte [sintab+di]
-    sar ax,4                       ; wave amplitude ~ -4..4 px
+    sar ax,5                       ; wave amplitude ~ -4..4 px (table is x127)
     add ax,SCROLL_BASE_Y
     mov dx,ax                      ; dx = this column's base Y
     xor cx,cx                      ; cx = glyph row 0..7
 .row:
     mov al,[si]                    ; si walks the glyph's 8 row bytes
     test al,bl
-    jz .bgpix
-    mov al,[scroll_fg_now]
-    jmp .havecolor
-.bgpix:
-    mov al,SCROLL_BG
-.havecolor:
-    push ax                        ; save pixel colour
-    mov ax,dx
-    add ax,cx
-    cmp ax,0
-    jl .skip
-    cmp ax,199
-    jg .skip
-    push dx                        ; save base Y (mul below clobbers dx)
-    push bx                        ; save glyph bitmask (mul below needs bx)
-    mov bx,320
-    mul bx
-    add ax,[scroll_x]
-    mov di,ax
-    pop bx
+    jz .rownext                    ; only lit pixels are drawn: no background
+    push bx                        ; band, so the sky shows through between
+    push dx                        ; letters. Each lit pixel gets a one-pixel
+    mov ax,dx                      ; black drop shadow down-right, drawn first
+    add ax,cx                      ; so the glyph colour lands on top of it
+    mov bx,[scroll_x]
+    inc ax
+    inc bx
+    mov dl,SCROLL_BG
+    call put_pixel
+    dec ax
+    dec bx
+    mov dl,[scroll_fg_now]
+    call put_pixel
     pop dx
-    pop ax
-    stosb
-    jmp .rownext
-.skip:
-    pop ax
+    pop bx
 .rownext:
     inc si                         ; next glyph row byte
     inc cx
@@ -1115,9 +1025,8 @@ scroll_draw:
     mov [scroll_x],ax
     cmp ax,320
     jb .col
-    ; advance scroll position, two frames per pixel for a readable speed
-    test bp,1
-    jnz .noadv
+    ; advance one pixel EVERY frame (70 px/s). It used to move every other frame
+    ; (35 px/s), which judders against a 70 Hz display.
     mov ax,[scrollpos]
     inc ax
     cmp ax,SCROLL_MSG_LEN*8
@@ -1125,8 +1034,45 @@ scroll_draw:
     xor ax,ax
 .advstore:
     mov [scrollpos],ax
-.noadv:
     popa
+    ret
+
+; AX = angle in 16 bits (65536 = one full turn). Returns AX = sin, DX = cos,
+; scaled +-127, LINEARLY INTERPOLATED between the 256 table entries. Rotation
+; used to index the table directly at half a step per frame, so a pose only
+; changed every second frame (a visible 35 Hz judder on a 70 Hz display) and
+; vertices snapped to a coarse grid; interpolating makes the motion continuous
+; at any speed.
+sincos16:
+    push bx
+    push cx
+    push si
+    mov si,ax
+    call sin16
+    push ax
+    mov ax,si
+    add ax,4000h                  ; cos(a) = sin(a + quarter turn)
+    call sin16
+    mov dx,ax
+    pop ax
+    pop si
+    pop cx
+    pop bx
+    ret
+sin16:
+    mov bx,ax
+    mov cl,8
+    shr bx,cl                     ; bx = table index 0..255
+    mov cx,ax
+    and cx,0FFh                   ; cx = fraction 0..255 between entries
+    movsx ax,byte [sintab+bx]     ; s0
+    inc bl                        ; next entry (bh=0, so bl wraps 255 -> 0)
+    movsx bx,byte [sintab+bx]     ; s1
+    sub bx,ax
+    imul bx,cx                    ; (s1-s0)*frac: |s1-s0|<=4 so this is tiny
+    add bx,80h                    ; round to nearest instead of truncating:
+    sar bx,8                      ; halves the worst-case error (1.5 -> 1.0)
+    add ax,bx
     ret
 
 ; Rotate one 3D point (cube_px,cube_py,cube_pz) by cube_angle_y (around the
@@ -1135,14 +1081,10 @@ scroll_draw:
 ; project it orthographically to screen space in (cube_sx,cube_sy).
 cube_rotate_project:
     pusha
-    mov bx,[cube_angle_y]
-    movsx ax,byte [sintab+bx]
+    mov ax,[cube_angle_y]
+    call sincos16
     mov [cube_t1],ax                ; sinY
-    mov si,bx
-    add si,64
-    and si,255
-    movsx ax,byte [sintab+si]
-    mov [cube_t2],ax                ; cosY
+    mov [cube_t2],dx                ; cosY
 
     mov ax,[cube_px]
     imul ax,[cube_t2]
@@ -1150,7 +1092,7 @@ cube_rotate_project:
     mov ax,[cube_pz]
     imul ax,[cube_t1]
     sub bx,ax
-    sar bx,6
+    sar bx,7                        ; undo the x127 table scale
     mov [cube_rx],bx                ; x*cosY - z*sinY
 
     mov ax,[cube_px]
@@ -1159,20 +1101,16 @@ cube_rotate_project:
     mov ax,[cube_pz]
     imul ax,[cube_t2]
     add bx,ax
-    sar bx,6
+    sar bx,7                        ; undo the x127 table scale
     mov [cube_rz],bx                ; x*sinY + z*cosY
 
     mov ax,[cube_py]
     mov [cube_ry],ax
 
-    mov bx,[cube_angle_x]
-    movsx ax,byte [sintab+bx]
+    mov ax,[cube_angle_x]
+    call sincos16
     mov [cube_t1],ax                ; sinX
-    mov si,bx
-    add si,64
-    and si,255
-    movsx ax,byte [sintab+si]
-    mov [cube_t2],ax                ; cosX
+    mov [cube_t2],dx                ; cosX
 
     mov ax,[cube_ry]
     imul ax,[cube_t2]
@@ -1180,7 +1118,7 @@ cube_rotate_project:
     mov ax,[cube_rz]
     imul ax,[cube_t1]
     sub bx,ax
-    sar bx,6
+    sar bx,7                        ; undo the x127 table scale
     mov [cube_ry2],bx                ; y*cosX - z*sinX
 
     mov ax,[cube_ry]
@@ -1189,7 +1127,7 @@ cube_rotate_project:
     mov ax,[cube_rz]
     imul ax,[cube_t2]
     add bx,ax
-    sar bx,6
+    sar bx,7                        ; undo the x127 table scale
     mov [cube_rz2],bx                ; y*sinX + z*cosX (final depth)
 
     ; True perspective projection (not orthographic): divide by distance
@@ -1248,6 +1186,470 @@ cube_rotate_project:
 .csy_hi_ok:
     ret
 
+; Night-sky gradient fill of the whole page (ES:0): 16 shades of the fixed sky
+; ramp, 13 rows each, dark at the top to dusky blue at the horizon. The 3D scenes
+; used to clear to flat black.
+fill_sky:
+    push ax
+    push bx
+    push cx
+    push dx
+    push di
+    xor di,di
+    mov dl,SKY_BASE
+    mov dh,13
+    mov bx,200
+.fs_row:
+    mov al,dl
+    mov ah,al
+    mov cx,160
+    rep stosw
+    dec dh
+    jnz .fs_same
+    mov dh,13
+    cmp dl,SKY_BASE+15
+    jae .fs_same
+    inc dl
+.fs_same:
+    dec bx
+    jnz .fs_row
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; BX = x, AX = y (signed), DL = colour: clipped single-pixel plot into the page
+; at ES. Preserves every register.
+put_pixel:
+    push ax
+    push cx
+    push di
+    cmp ax,0
+    jl .pp_done
+    cmp ax,199
+    jg .pp_done
+    cmp bx,0
+    jl .pp_done
+    cmp bx,319
+    jg .pp_done
+    push dx
+    mov cx,320
+    mul cx
+    pop dx
+    add ax,bx
+    mov di,ax
+    mov [es:di],dl
+.pp_done:
+    pop di
+    pop cx
+    pop ax
+    ret
+
+; 3D starfield pass (no clear, so it can sit behind other scenes). 32 stars, each
+; with a genuine Z computed fresh from the frame clock; shade steps with depth in
+; four levels and the nearest stars are drawn 2x2, so they read as closer rather
+; than just brighter.
+star_pass:
+    pusha
+    mov word [star_idx],0
+    xor si,si
+.st_loop:
+    mov ax,bp
+    mov cx,3
+    mul cx
+    mov cx,[star_idx]
+    imul cx,37
+    add ax,cx
+    xor dx,dx
+    mov cx,240
+    div cx
+    mov ax,255
+    sub ax,dx
+    mov [star_z],ax
+
+    mov ax,[star_base_x+si]
+    mov cx,STAR_SCALE
+    imul ax,cx
+    cwd
+    idiv word [star_z]
+    add ax,160
+    mov [star_sx],ax
+    mov ax,[star_base_y+si]
+    mov cx,STAR_SCALE
+    imul ax,cx
+    cwd
+    idiv word [star_z]
+    add ax,100
+    mov [star_sy],ax
+
+    mov ax,[star_z]
+    mov dl,CUBE_FG_DIM
+    cmp ax,192
+    jge .st_col
+    mov dl,STAR_MID
+    cmp ax,128
+    jge .st_col
+    mov dl,CUBE_FG
+    cmp ax,64
+    jge .st_col
+    mov dl,STAR_NEAR
+.st_col:
+    mov bx,[star_sx]
+    mov ax,[star_sy]
+    call put_pixel
+    cmp word [star_z],64
+    jge .st_next
+    inc bx
+    call put_pixel
+    inc ax
+    call put_pixel
+    dec bx
+    call put_pixel
+.st_next:
+    add si,2
+    mov ax,[star_idx]
+    inc ax
+    mov [star_idx],ax
+    cmp ax,STAR_COUNT
+    jb .st_loop
+    popa
+    ret
+
+; Scanline-fill the convex polygon in pv_x/pv_y (4 vertices; a triangle repeats
+; its last) with poly_color. Every edge is walked once in 8.8 fixed point,
+; recording the leftmost/rightmost x it reaches on each row; the spans are then
+; filled with REP STOSB. Rows and columns are clipped to the page.
+fill_poly:
+    pusha
+    mov ax,[pv_y]
+    mov bx,ax                     ; bx = ymin
+    mov dx,ax                     ; dx = ymax
+    mov si,2
+.fp_ext:
+    mov ax,[pv_y+si]
+    cmp ax,bx
+    jge .fp_nomin
+    mov bx,ax
+.fp_nomin:
+    cmp ax,dx
+    jle .fp_nomax
+    mov dx,ax
+.fp_nomax:
+    add si,2
+    cmp si,8
+    jb .fp_ext
+    cmp dx,0
+    jl .fp_done
+    cmp bx,199
+    jg .fp_done
+    cmp bx,0
+    jge .fp_c1
+    xor bx,bx
+.fp_c1:
+    cmp dx,199
+    jle .fp_c2
+    mov dx,199
+.fp_c2:
+    mov [pf_ymin],bx
+    mov [pf_ymax],dx
+    mov ax,dx                     ; end of the row range, as a word index
+    shl ax,1                      ; (16-bit on purpose: the upper half of EDX
+    add ax,2                      ; holds leftovers from earlier 32-bit math)
+    mov [pf_end],ax
+    mov si,bx
+    shl si,1
+    mov cx,dx
+    sub cx,bx
+    inc cx
+.fp_init:
+    mov word [poly_min+si],7FFFh
+    mov word [poly_max+si],8000h
+    add si,2
+    loop .fp_init
+
+    xor si,si
+.fp_edges:
+    mov bx,si
+    add bx,2
+    and bx,7                      ; next vertex, wrapping after four
+    mov ax,[pv_x+si]
+    mov [ed_x0],ax
+    mov ax,[pv_y+si]
+    mov [ed_y0],ax
+    mov ax,[pv_x+bx]
+    mov [ed_x1],ax
+    mov ax,[pv_y+bx]
+    mov [ed_y1],ax
+    call edge_rows
+    add si,2
+    cmp si,8
+    jb .fp_edges
+
+    mov ax,[pf_ymin]
+    mov cx,320
+    mul cx
+    mov [pf_rowbase],ax
+    mov si,[pf_ymin]
+    shl si,1
+.fp_rows:
+    mov ax,[poly_min+si]
+    mov bx,[poly_max+si]
+    cmp ax,bx
+    jg .fp_skip
+    cmp bx,0
+    jl .fp_skip
+    cmp ax,319
+    jg .fp_skip
+    cmp ax,0
+    jge .fp_l
+    xor ax,ax
+.fp_l:
+    cmp bx,319
+    jle .fp_r
+    mov bx,319
+.fp_r:
+    mov cx,bx
+    sub cx,ax
+    inc cx
+    mov di,[pf_rowbase]
+    add di,ax
+    mov al,[poly_color]
+    rep stosb
+.fp_skip:
+    add word [pf_rowbase],320
+    add si,2
+    cmp si,[pf_end]
+    jb .fp_rows
+.fp_done:
+    popa
+    ret
+
+; Walk one polygon edge (ed_x0,ed_y0)-(ed_x1,ed_y1) top to bottom in 8.8 fixed
+; point, widening poly_min/poly_max on every row it crosses inside the clipped
+; row range.
+edge_rows:
+    pusha
+    mov ax,[ed_y0]
+    cmp ax,[ed_y1]
+    je .er_flat
+    jl .er_ordered
+    xchg ax,[ed_y1]               ; make y0 < y1 by swapping the endpoints
+    mov [ed_y0],ax
+    mov ax,[ed_x0]
+    xchg ax,[ed_x1]
+    mov [ed_x0],ax
+.er_ordered:
+    movsx eax,word [ed_x1]
+    movsx edx,word [ed_x0]
+    sub eax,edx
+    shl eax,8
+    movsx ecx,word [ed_y1]
+    movsx edx,word [ed_y0]
+    sub ecx,edx                   ; dy > 0
+    cdq
+    idiv ecx                      ; eax = dx/dy in 8.8
+    mov [ed_slope],eax
+    movsx ebx,word [ed_x0]
+    shl ebx,8
+    add ebx,80h                   ; start at the pixel centre
+    mov si,[ed_y0]
+.er_loop:
+    cmp si,[pf_ymin]
+    jl .er_next
+    cmp si,[pf_ymax]
+    jg .er_done
+    mov eax,ebx
+    sar eax,8
+    push si
+    shl si,1
+    cmp ax,[poly_min+si]
+    jge .er_nomin
+    mov [poly_min+si],ax
+.er_nomin:
+    cmp ax,[poly_max+si]
+    jle .er_nomax
+    mov [poly_max+si],ax
+.er_nomax:
+    pop si
+.er_next:
+    add ebx,[ed_slope]
+    inc si
+    cmp si,[ed_y1]
+    jle .er_loop
+    jmp .er_done
+.er_flat:
+    mov si,[ed_y0]
+    cmp si,[pf_ymin]
+    jl .er_done
+    cmp si,[pf_ymax]
+    jg .er_done
+    shl si,1
+    mov ax,[ed_x0]
+    call .er_upd
+    mov ax,[ed_x1]
+    call .er_upd
+.er_done:
+    popa
+    ret
+.er_upd:
+    cmp ax,[poly_min+si]
+    jge .eu_a
+    mov [poly_min+si],ax
+.eu_a:
+    cmp ax,[poly_max+si]
+    jle .eu_b
+    mov [poly_max+si],ax
+.eu_b:
+    ret
+
+; Solid pass for render_object: for every face compute its normal from the
+; ROTATED vertices, cull it if it points away from the eye (perspective-correct
+; test against the real eye position, not just the sign of normal-Z, or faces
+; seen at a glancing angle would drop out), light it with one directional light,
+; fill it with the matching step of the shading ramp, and outline it.
+render_faces:
+    pusha
+    mov word [face_off],0
+.rf_loop:
+    mov si,[obj_faces_ptr]
+    add si,[face_off]
+    xor ah,ah
+    mov al,[si]
+    shl ax,1
+    mov [fv0],ax
+    mov al,[si+1]
+    xor ah,ah
+    shl ax,1
+    mov [fv1],ax
+    mov al,[si+2]
+    xor ah,ah
+    shl ax,1
+    mov [fv2],ax
+    mov al,[si+3]
+    xor ah,ah
+    shl ax,1
+    mov [fv3],ax
+
+    mov bx,[fv0]                  ; A
+    mov di,[fv1]                  ; B
+    mov si,[fv2]                  ; C
+    mov ax,[rot_x+di]
+    sub ax,[rot_x+bx]
+    mov [fu_x],ax
+    mov ax,[rot_y+di]
+    sub ax,[rot_y+bx]
+    mov [fu_y],ax
+    mov ax,[proj_z+di]
+    sub ax,[proj_z+bx]
+    mov [fu_z],ax
+    mov ax,[rot_x+si]
+    sub ax,[rot_x+bx]
+    mov [fv_x],ax
+    mov ax,[rot_y+si]
+    sub ax,[rot_y+bx]
+    mov [fv_y],ax
+    mov ax,[proj_z+si]
+    sub ax,[proj_z+bx]
+    mov [fv_z],ax
+
+    mov ax,[fu_y]                 ; n = u x v
+    imul ax,[fv_z]
+    mov dx,[fu_z]
+    imul dx,[fv_y]
+    sub ax,dx
+    mov [fc_nx],ax
+    mov ax,[fu_z]
+    imul ax,[fv_x]
+    mov dx,[fu_x]
+    imul dx,[fv_z]
+    sub ax,dx
+    mov [fc_ny],ax
+    mov ax,[fu_x]
+    imul ax,[fv_y]
+    mov dx,[fu_y]
+    imul dx,[fv_x]
+    sub ax,dx
+    mov [fc_nz],ax
+
+    ; visible iff n . (A - eye) < 0, eye at (0,0,-CUBE_EYE_DIST); 32-bit since
+    ; |n| ~ 6400 times coordinates ~ 60 overflows 16 bits
+    movsx eax,word [fc_nx]
+    movsx edx,word [rot_x+bx]
+    imul eax,edx
+    movsx ecx,word [fc_ny]
+    movsx edx,word [rot_y+bx]
+    imul ecx,edx
+    add eax,ecx
+    movsx ecx,word [fc_nz]
+    movsx edx,word [proj_z+bx]
+    add edx,CUBE_EYE_DIST
+    imul ecx,edx
+    add eax,ecx
+    jge .rf_next                  ; facing away: skip
+
+    movsx eax,word [fc_nx]        ; lighting: n . L / (|n||L|) -> 0..15
+    imul eax,eax,LIGHT_X
+    movsx edx,word [fc_ny]
+    imul edx,edx,LIGHT_Y
+    add eax,edx
+    movsx edx,word [fc_nz]
+    imul edx,edx,LIGHT_Z
+    add eax,edx
+    imul eax,eax,13               ; full-on light -> 13, +1 ambient = 14: the
+    cdq                           ; brightest face stays one step darker than the
+    idiv dword [obj_norml]        ; outline (step 15), so outlines never vanish
+    add eax,1                     ; a little ambient so no face goes fully dark
+    test eax,eax
+    jge .rf_lo
+    xor eax,eax
+.rf_lo:
+    cmp eax,15
+    jle .rf_hi
+    mov eax,15
+.rf_hi:
+    add al,SHADE_BASE
+    mov [poly_color],al
+
+    xor bx,bx                     ; copy the four screen-space vertices
+.rf_pv:
+    mov si,[fv0+bx]
+    mov ax,[proj_x+si]
+    mov [pv_x+bx],ax
+    mov ax,[proj_y+si]
+    mov [pv_y+bx],ax
+    add bx,2
+    cmp bx,8
+    jb .rf_pv
+    call fill_poly
+
+    mov byte [line_color],SHADE_BASE+15   ; bright outline
+    xor bx,bx
+.rf_edge:
+    mov si,bx
+    add si,2
+    and si,7
+    mov ax,[pv_x+bx]
+    mov [line_x0],ax
+    mov ax,[pv_y+bx]
+    mov [line_y0],ax
+    mov ax,[pv_x+si]
+    mov [line_x1],ax
+    mov ax,[pv_y+si]
+    mov [line_y1],ax
+    call draw_line
+    add bx,2
+    cmp bx,8
+    jb .rf_edge
+.rf_next:
+    add word [face_off],4
+    mov ax,[face_off]
+    cmp ax,[obj_fbytes]
+    jb .rf_loop
+    popa
+    ret
+
 ; Generic wireframe-object renderer: projects every vertex of an arbitrary
 ; object (any vertex/edge list, up to 8 vertices) through cube_rotate_project
 ; -- so it uses whatever cube_angle_y/cube_angle_x the caller set -- offsets
@@ -1278,10 +1680,21 @@ render_object:
     mov [proj_y+si],ax
     mov ax,[cube_rz2]
     mov [proj_z+si],ax
+    mov ax,[cube_rx]
+    mov [rot_x+si],ax
+    mov ax,[cube_ry2]
+    mov [rot_y+si],ax
     add bx,6
     add si,2
     cmp bx,[obj_vbytes]
     jb .rv_loop
+
+    cmp byte [obj_solid],0
+    je .ro_wire
+    call render_faces
+    popa
+    ret
+.ro_wire:
 
     xor si,si
 .re_loop:
@@ -1586,6 +1999,9 @@ opl_init:
     mov cl,7
     mov si,inst_sd
     call opl_set_instrument
+    mov cl,8                      ; tom (op 18) and cymbal (op 21) live here
+    mov si,inst_sd
+    call opl_set_instrument
 
     ; Rhythm-channel frequencies are set once via their own A/B registers;
     ; in rhythm mode the key-on bit normally in 0xB6/0xB7 is ignored, each
@@ -1601,6 +2017,12 @@ opl_init:
     call opl_write
     mov ah,0B7h
     mov al,07h
+    call opl_write
+    mov ah,0A8h
+    mov al,06h                    ; tom pitch (~D3)
+    call opl_write
+    mov ah,0B8h
+    mov al,0Ah
     call opl_write
 
     mov byte [opl_bd_base],20h    ; rhythm mode on, no extra AM/VIB depth
@@ -1653,247 +2075,232 @@ opl_note_off:
 ; value main: already computed) by adding 0x400 per step to the packed
 ; note value -- block occupies bits 10-12, so this is exactly one octave
 ; up each time, regardless of the starting note.
-; LEAD (channel 0): 32-step A-minor-pentatonic phrase (a 16-step call, then
-; a complementary 16-step response) with rests, updated every 8 frames
-; (~8.75 Hz at VGA 70 Hz). A 0 entry in `notes` is a rest: the channel is
-; keyed off rather than retriggered, so the pattern has actual rhythm
-; instead of one continuous drone. Transposed by show act (cur_scene/8, the
-; same shared value main: already computed) by adding 0x400 per step to
-; the packed note value -- block occupies bits 10-12, so this is exactly
-; one octave up each time, regardless of the starting note.
+; ---- Music: one shared step clock, five voices ------------------------------
+; The song is a 4-bar chord progression (Am | C | G | Em) of 32 steps per bar, a
+; step being 8 frames (~8.75 steps/s), so the whole form is ~15 s instead of the
+; old identical 3.7 s loop. Every note stays inside A minor pentatonic, which fits
+; all four chords, so melody and harmony can't clash. m_step is the global step
+; (0..127); everything below derives from it, so the voices can't drift apart.
+;
+; Two phases per step: at bp%8 == 6 the lead/bass/echo keys go off and the drum
+; bits clear (a brief silence so the next note has a real attack); at bp%8 == 0
+; the step boundary fires every voice.
 music_tick:
-    ; Two frames before each new step, key off briefly: a short, clean
-    ; silence before the next retrigger reads as a real note attack
-    ; instead of one note sliding straight into the next.
     mov ax,bp
     and ax,7
     cmp ax,6
-    jne .checkbeat
-    mov cl,0
-    call opl_note_off
-    jmp bass_tick
-.checkbeat:
+    je .mt_gap
+    test ax,ax
+    jnz .mt_done
     mov ax,bp
-    test al,7
-    jnz .done
-    shr ax,3
-    and ax,31
-    shl ax,1
-    mov si,ax
-    mov ax,[notes+si]
-    cmp ax,0
-    jne .has_note
-    mov cl,0
-    call opl_note_off          ; rest: silence until the next audible step
-    jmp .done
-.has_note:
-    mov dl,[cur_scene]
-    shr dl,3                   ; 0..2: which third of the show we're in
-    cmp dl,2
-    jbe .shiftok
-    mov dl,2
-.shiftok:
-    xor dh,dh
-    mov bx,dx
-    shl bx,10                  ; each unit = 0x400 = one octave up (block
-    add ax,bx                  ; lives in bits 10-12 of the packed value)
-    mov cl,0
-    call opl_note_on
-.done:
-    jmp bass_tick
-
-; BASS (channel 1): a sparser 32-step pattern in the low register, mostly
-; root notes with rests, pulsing under the lead. Shares the same 0x400-per-
-; act transposition as the lead so it stays harmonically locked to it.
-bass_tick:
-    mov ax,bp
-    and ax,7
-    cmp ax,6
-    jne .checkbeat
-    mov cl,1
-    call opl_note_off
-    jmp pad_tick
-.checkbeat:
-    mov ax,bp
-    test al,7
-    jnz .done
-    shr ax,3
-    and ax,31
-    shl ax,1
-    mov si,ax
-    mov ax,[bass_notes+si]
-    cmp ax,0
-    jne .has_note
-    mov cl,1
-    call opl_note_off
-    jmp .done
-.has_note:
-    mov dl,[cur_scene]
-    shr dl,3
-    cmp dl,2
-    jbe .shiftok
-    mov dl,2
-.shiftok:
-    xor dh,dh
-    mov bx,dx
-    shl bx,10
-    add ax,bx
-    mov cl,1
-    call opl_note_on
-.done:
-    jmp pad_tick
-
-; PAD (channel 2): a slow sustained chord tone that only changes every 128
-; frames (4x per 512-frame scene), cycling through A-minor triad tones for
-; gentle harmonic movement under the lead/bass. No staccato mute here --
-; unlike the lead/bass it's meant to ring on legato, not re-attack cleanly.
-pad_tick:
-    mov ax,bp
+    mov cl,3
+    shr ax,cl
     and ax,127
-    jnz .pt_done
-    mov ax,bp
-    shr ax,7
-    and ax,3
-    shl ax,1
-    mov si,ax
-    mov ax,[pad_notes+si]
-    mov dl,[cur_scene]
-    shr dl,3
-    cmp dl,2
-    jbe .pt_shiftok
+    mov [m_step],ax
+    mov dl,[cur_scene]            ; act transposition: 0, 1 or 2 octaves up, as
+    shr dl,3                      ; 0x400 per octave (the 3-bit block field sits
+    cmp dl,2                      ; in bits 10-12 of the packed note)
+    jbe .mt_tr
     mov dl,2
-.pt_shiftok:
+.mt_tr:
     xor dh,dh
-    mov bx,dx
-    shl bx,10
-    add ax,bx
-    mov cl,2
-    call opl_note_off          ; key off first: re-keying a held note would
-    call opl_note_on           ; just glide, with no new attack/swell
-.pt_done:
-    jmp echo_tick
-
-; ECHO (channel 3): the lead's note from two steps ago, replayed softer --
-; a classic tape-delay shimmer that turns one melody into a layered line.
-; Same octave as the lead on purpose: the packed note's 3-bit block field
-; tops out at 7, and the lead's highest note (block 5) plus two act
-; transpositions already reaches it, so shifting the echo up would overflow.
-echo_tick:
-    mov ax,bp
-    and ax,7
-    cmp ax,6
-    jne .et_beat
+    mov cl,10
+    shl dx,cl
+    mov [m_trans],dx
+    call lead_step
+    call bass_step
+    call pad_step
+    call echo_step
+    call drum_step
+.mt_done:
+    ret
+.mt_gap:
+    mov cl,0
+    call opl_note_off
+    mov cl,1
+    call opl_note_off
     mov cl,3
     call opl_note_off
-    jmp drum_tick
-.et_beat:
-    mov ax,bp
-    test al,7
-    jnz .et_done
-    cmp ax,24                  ; nothing to echo until the lead has played it:
-    jb .et_rest                ; its first note is at frame 8 (the tick runs
-                               ; after inc bp, so step 0 is skipped once)
-    shr ax,3
-    sub ax,2                   ; two steps behind the lead
-    and ax,31
-    shl ax,1
-    mov si,ax
-    mov ax,[notes+si]
-    cmp ax,0
-    jne .et_has
-.et_rest:
-    mov cl,3
-    call opl_note_off
-    jmp .et_done
-.et_has:
-    mov dl,[cur_scene]
-    shr dl,3
-    cmp dl,2
-    jbe .et_shift
-    mov dl,2
-.et_shift:
-    xor dh,dh
-    mov bx,dx
-    shl bx,10
-    add ax,bx
-    mov cl,3
-    call opl_note_on
-.et_done:
-    jmp drum_tick
-
-; RHYTHM (OPL2 built-in bass drum + snare, borrowed from channels 6/7):
-; bass drum on the downbeat of every 8-step group (steps 0,8,16,24), snare
-; on the backbeat (steps 4,12,20,28) -- a simple, classic kick/snare
-; pattern locked to the same step grid as the lead. Each hit clears the
-; drum bits one tick early (same "brief silence before retrigger" idea
-; used elsewhere) so consecutive hits always see a real 0->1 edge.
-drum_tick:
-    mov ax,bp
-    and ax,7
-    cmp ax,6
-    jne .dt_beat
     mov al,[opl_bd_base]
     mov ah,0BDh
     call opl_write
     ret
-.dt_beat:
-    mov ax,bp
-    test al,7
-    jnz .dt_done
-    shr ax,3
-    and ax,7                   ; position within each 8-step group
-    mov bx,ax                  ; keep it out of AX: loading the baseline into
-    mov al,[opl_bd_base]       ; AL below would otherwise clobber the compare
-    cmp bx,0                   ; (this used to test AX after overwriting AL, so
-    je .dt_isbd                ; neither drum ever fired)
-    cmp bx,4
-    je .dt_issd
-    cmp bx,2
-    je .dt_ishh
-    cmp bx,6
-    je .dt_ishh
-    jmp .dt_write
-.dt_isbd:
-    or al,10h                  ; bass-drum key-on bit
-    jmp .dt_write
-.dt_issd:
-    or al,08h                  ; snare-drum key-on bit
-    jmp .dt_write
-.dt_ishh:
-    or al,01h                  ; hi-hat key-on bit (the off-beats)
-.dt_write:
-    mov ah,0BDh
-    call opl_write
-.dt_done:
+
+; LEAD (channel 0): four different 32-step phrases, one per chord, each landing
+; on that chord's tones on the strong beats; the last ends on A to lead back
+; into the first.
+lead_step:
+    mov si,[m_step]
+    shl si,1
+    mov ax,[lead_notes+si]
+    test ax,ax
+    jz .ls_rest
+    add ax,[m_trans]
+    mov cl,0
+    call opl_note_on
+    ret
+.ls_rest:
+    mov cl,0
+    call opl_note_off
     ret
 
-; A-minor pentatonic, OPL2 packed fnum/block for A3,C4,D4,E4,G4,A4,C5,D5,
-; E5,G5 (0=rest). First 16 steps are the "call" phrase, last 16 a
-; complementary descending "response" resolving back onto A4, so the
-; 32-step loop feels like one phrase instead of two halves stitched
-; together.
-notes dw 0x1244,0x12b2,0x1365,0,0x1306,0x12b2,0x1244,0
-      dw 0x1205,0x1244,0x12b2,0x1306,0x1365,0,0x12b2,0x1605
-      dw 0x1605,0x1365,0x1306,0,0x12b2,0x1306,0x1365,0
-      dw 0x1205,0x1365,0x12b2,0x1244,0x1205,0,0x12b2,0x1244
+; BASS (channel 1): one rhythm pattern (root / octave / rest) played on each
+; bar's chord root.
+bass_step:
+    mov bx,[m_step]
+    and bx,31
+    mov dl,[bass_pat+bx]
+    test dl,dl
+    jz .bs_rest
+    mov ax,[m_step]
+    mov cl,5
+    shr ax,cl
+    and ax,3                      ; bar 0..3
+    shl ax,1
+    mov si,ax
+    mov ax,[bass_roots+si]
+    cmp dl,2
+    jne .bs_root
+    add ax,400h                   ; octave up
+.bs_root:
+    add ax,[m_trans]
+    mov cl,1
+    call opl_note_on
+    ret
+.bs_rest:
+    mov cl,1
+    call opl_note_off
+    ret
 
-; Bass line: low-register root notes (A1,C2,D2,E2,G2; 0=rest), one entry
-; per lead step, same call/response shape as the lead but sparse -- mostly
-; rests, with the roots landing to outline the harmony rather than play
-; every step.
-bass_notes dw 0x644,0,0,0,0,0,0x644,0
-           dw 0xa05,0,0,0,0,0,0xa05,0
-           dw 0xa05,0,0,0,0,0,0xa05,0
-           dw 0x644,0,0,0,0,0,0x644,0
+; PAD (channel 2): the chord's tones, one every 8 steps (4 per bar). Keyed off
+; then on, so each change gets a real swell instead of just gliding.
+pad_step:
+    mov ax,[m_step]
+    test al,7
+    jnz .ps_done
+    mov cl,3
+    shr ax,cl
+    and ax,15
+    shl ax,1
+    mov si,ax
+    mov ax,[pad_chords+si]
+    add ax,[m_trans]
+    mov cl,2
+    call opl_note_off
+    call opl_note_on
+.ps_done:
+    ret
 
-; Pad chord tones (A4,C5,E5,C5 -- an A-minor triad with a brief return to
-; C5), one entry consumed every 128 frames.
-pad_notes dw 0x1244,0x12b2,0x1365,0x12b2
+; ECHO (channel 3): the lead's note from two steps ago, replayed softer. Same
+; octave as the lead on purpose: the packed note's 3-bit block field tops out at
+; 7 and the lead's highest note (block 5) plus two act transpositions reaches it.
+; Silent until the lead has played that note (the tick runs after inc bp, so
+; step 0 is skipped once).
+echo_step:
+    cmp bp,24
+    jb .es_rest
+    mov si,[m_step]
+    sub si,2
+    and si,127
+    shl si,1
+    mov ax,[lead_notes+si]
+    test ax,ax
+    jz .es_rest
+    add ax,[m_trans]
+    mov cl,3
+    call opl_note_on
+    ret
+.es_rest:
+    mov cl,3
+    call opl_note_off
+    ret
+
+; RHYTHM: kick on the downbeat, snare on the backbeat, hi-hat on the off-beats;
+; a tom+snare fill through the last 8 steps of bar 4; a cymbal crash on the first
+; step of bar 1 to mark the top of the form. One 0BDh write per step.
+drum_step:
+    mov ax,[m_step]
+    mov bx,ax
+    and bx,7                      ; position within the beat group
+    mov dx,ax
+    and dx,31                     ; step within the bar
+    mov cl,5
+    shr ax,cl
+    and ax,3                      ; bar
+    mov cl,[opl_bd_base]
+    cmp bx,0
+    jne .dr_notbd
+    or cl,10h                     ; bass drum
+.dr_notbd:
+    cmp bx,4
+    jne .dr_notsd
+    or cl,08h                     ; snare
+.dr_notsd:
+    cmp bx,2
+    je .dr_hh
+    cmp bx,6
+    jne .dr_nohh
+.dr_hh:
+    or cl,01h                     ; hi-hat
+.dr_nohh:
+    cmp ax,3
+    jne .dr_nofill
+    cmp dx,24
+    jb .dr_nofill
+    or cl,0Ch                     ; fill: snare + tom every step
+.dr_nofill:
+    test ax,ax
+    jnz .dr_write
+    test dx,dx
+    jnz .dr_write
+    or cl,02h                     ; crash cymbal at the top of the form
+.dr_write:
+    mov al,cl
+    mov ah,0BDh
+    call opl_write
+    ret
+
+; Lead phrases, 4 bars x 32 steps (0 = rest). Packed OPL2 fnum|block<<10 values,
+; generated from the note names in the comments, not typed by hand.
+lead_notes:
+    ; bar 1: Am
+    dw 0x1244,0x12b2,0x1365,0,0x1306,0x12b2,0x1244,0
+    dw 0x1365,0,0x1306,0x12b2,0x1244,0,0x1205,0x1244
+    dw 0x12b2,0,0x1365,0,0x1605,0x1365,0x1306,0
+    dw 0x12b2,0x1306,0x12b2,0x1244,0x1205,0,0x1244,0
+    ; bar 2: C
+    dw 0x12b2,0x1365,0x1605,0,0x1365,0x1306,0x12b2,0
+    dw 0x1605,0,0x1365,0x1306,0x12b2,0,0x1244,0x12b2
+    dw 0x1306,0,0x1365,0,0x12b2,0x1306,0x1365,0
+    dw 0x1205,0x1244,0x12b2,0x1306,0x12b2,0,0x1365,0
+    ; bar 3: G
+    dw 0x1306,0,0x1365,0x1306,0x1205,0,0x1244,0x1205
+    dw 0x1306,0x1365,0x1306,0,0x12b2,0x1244,0x1205,0
+    dw 0x1244,0,0x12b2,0x1306,0x1365,0,0x1306,0x12b2
+    dw 0x1244,0x1205,0x1244,0,0x1205,0,0x1306,0
+    ; bar 4: Em
+    dw 0x1365,0,0x1605,0x1365,0x1306,0,0x12b2,0x1244
+    dw 0x1365,0x1306,0x1365,0,0x1205,0x1244,0x12b2,0
+    dw 0x1365,0,0x1306,0,0x12b2,0,0x1244,0
+    dw 0x1205,0x1244,0x12b2,0x1306,0x1365,0,0,0x1244
+
+; bass: 1 = chord root, 2 = root an octave up, 0 = rest (steps within a bar)
+bass_pat db 1,0,0,1,0,0,2,0,1,0,0,1,0,2,0,1
+         db 1,0,0,1,0,0,2,0,1,0,0,2,0,1,0,2
+; bass roots per bar: A1 C2 G2 E2
+bass_roots dw 0x0644,0x06b2,0x0a05,0x0765
+; pad chord tones, 4 per bar (Am, C, G, Em), one every 8 steps
+pad_chords dw 0x1244,0x12b2,0x1365,0x12b2
+           dw 0x12b2,0x1365,0x1605,0x1365
+           dw 0x1205,0x1306,0x1365,0x1306
+           dw 0x0f65,0x1205,0x1365,0x1205
 old_mode db 3
 vga_page db 0                     ; which page we render into next
 show_page db 0                    ; which page present: just flipped to
 pal_limit db 63
 pic_mask db 0
+m_step dw 0                       ; global music step 0..127 (see music_tick)
+m_trans dw 0                      ; act transposition for this step, in packed-note units
 cur_scene db 0                    ; scene index main: computed this frame,
                                    ; shared with scene_marker/music_tick so
                                    ; they can't drift out of sync with it
@@ -1901,10 +2308,10 @@ cur_scene db 0                    ; scene index main: computed this frame,
 ; --- OPL2 instrument patches: [mod char,level,AD,SR,wave, car same x5,
 ; feedback/connection] -- see opl_set_instrument ---
 opl_bd_base db 0                  ; baseline 0BDh value (rhythm on, no hit)
-inst_lead db 01h,12h,0F0h,77h,00h, 01h,00h,0F2h,77h,00h, 01h
-inst_bass db 01h,00h,0F0h,77h,00h, 01h,00h,0F2h,77h,01h, 01h
-inst_echo db 01h,20h,0F0h,77h,00h, 01h,14h,0F2h,77h,00h, 01h
-inst_pad  db 21h,20h,43h,66h,00h, 21h,10h,33h,33h,00h, 00h
+inst_lead db 01h,16h,0F4h,74h,00h, 41h,00h,0F3h,65h,00h, 04h   ; FM, feedback 2, carrier vibrato
+inst_bass db 01h,0Eh,0F2h,75h,00h, 01h,00h,0F2h,66h,01h, 02h   ; FM, half-sine carrier for bite
+inst_echo db 01h,20h,0F2h,75h,00h, 01h,14h,0F2h,75h,00h, 04h   ; FM, softer than the lead
+inst_pad  db 21h,2Ch,43h,66h,00h, 61h,12h,33h,35h,00h, 00h    ; sustained, low mod index, vibrato
 inst_bd   db 01h,00h,0F0h,55h,00h, 01h,00h,0F0h,55h,00h, 00h
 inst_sd   db 0Dh,00h,0F0h,33h,02h, 0Dh,00h,0F0h,33h,02h, 00h
 
@@ -1932,7 +2339,9 @@ cube_sy dw 0
 cube_depth dw 0
 proj_x times 8 dw 0
 proj_y times 8 dw 0
-proj_z times 8 dw 0
+proj_z times 8 dw 0                ; rotated Z per vertex (depth)
+rot_x times 8 dw 0                 ; rotated X/Y per vertex, for face normals
+rot_y times 8 dw 0
 
 ; --- generic multi-object renderer state (render_object) ---
 obj_verts_ptr dw 0
@@ -1943,6 +2352,40 @@ obj_offset_x dw 0                 ; screen-space translation for this object
 obj_offset_y dw 0
 obj_fg db 0
 obj_fg_dim db 0
+obj_solid db 0                    ; 1 = filled/shaded faces, 0 = wireframe
+obj_faces_ptr dw 0
+obj_fbytes dw 0                   ; face count * 4
+obj_norml dd 0                    ; |normal|*|light| for this object
+
+; --- face renderer / polygon fill working state ---
+face_off dw 0
+fv0 dw 0
+fv1 dw 0
+fv2 dw 0
+fv3 dw 0
+fu_x dw 0
+fu_y dw 0
+fu_z dw 0
+fv_x dw 0
+fv_y dw 0
+fv_z dw 0
+fc_nx dw 0
+fc_ny dw 0
+fc_nz dw 0
+pv_x times 4 dw 0                 ; polygon vertices in screen space
+pv_y times 4 dw 0
+poly_color db 0
+pf_ymin dw 0
+pf_ymax dw 0
+pf_end dw 0
+pf_rowbase dw 0
+ed_x0 dw 0
+ed_y0 dw 0
+ed_x1 dw 0
+ed_y1 dw 0
+ed_slope dd 0
+poly_min times 200 dw 0           ; per-scanline left/right extent of the polygon
+poly_max times 200 dw 0
 
 ; --- 3D starfield scene state ---
 star_idx dw 0
@@ -1975,6 +2418,75 @@ octa_verts: dw  35,  0,  0
             dw   0,  0, 35
             dw   0,  0,-35
 octa_edges: db 0,2, 0,3, 0,4, 0,5, 1,2, 1,3, 1,4, 1,5, 2,4, 2,5, 3,4, 3,5
+
+
+; Faces, 4 vertex indices each (triangles repeat their last vertex), wound so
+; that (B-A)x(C-A) points OUTWARD -- generated and checked by script, because
+; backface culling and lighting both depend on that orientation being right.
+cube_faces:
+    db 3,2,1,0
+    db 4,5,6,7
+    db 4,7,3,0
+    db 1,2,6,5
+    db 0,1,5,4
+    db 7,6,2,3
+octa_faces:
+    db 0,2,4,4
+    db 0,4,3,3
+    db 0,3,5,5
+    db 0,5,2,2
+    db 1,4,2,2
+    db 1,3,4,4
+    db 1,5,3,3
+    db 1,2,5,5
+; |normal| * |light| per object: every face of a regular solid has the same
+; normal length, so lighting divides by one constant instead of a square root.
+cube_norml dd 89600
+octa_norml dd 29705
+
+fixed_pal:
+    db 1,0,0,0,0
+    db 2,0,63,63,63
+    db 3,0,24,24,24
+    db 4,0,63,0,0
+    db 5,0,63,63,0
+    db 6,0,0,50,0
+    db 7,0,0,55,63
+    db 8,1,7,9,24
+    db 9,1,7,11,28
+    db 10,1,8,14,31
+    db 11,1,10,17,34
+    db 12,1,12,20,37
+    db 13,1,15,24,40
+    db 14,1,18,27,42
+    db 15,1,22,31,45
+    db 16,1,26,35,47
+    db 17,1,30,39,49
+    db 18,1,35,42,52
+    db 19,1,40,46,54
+    db 20,1,45,50,56
+    db 21,1,50,54,58
+    db 22,1,56,58,60
+    db 23,1,63,63,63
+    db 24,1,0,0,4
+    db 25,1,1,0,5
+    db 26,1,2,1,7
+    db 27,1,4,1,8
+    db 28,1,5,2,10
+    db 29,1,6,2,12
+    db 30,1,8,3,13
+    db 31,1,9,3,15
+    db 32,1,10,4,16
+    db 33,1,12,4,18
+    db 34,1,13,5,20
+    db 35,1,14,5,21
+    db 36,1,16,6,23
+    db 37,1,17,6,24
+    db 38,1,18,7,26
+    db 39,1,20,8,28
+    db 40,1,44,44,50
+    db 41,1,63,60,48
+FIXED_PAL_COUNT equ 41
 
 ; --- general-purpose line-draw state (Bresenham, used by scene_cube) ---
 line_x0 dw 0
@@ -2024,18 +2536,18 @@ scroll_msg:
     db 5,22,9,18,0,32,0
 SCROLL_MSG_LEN equ 147
 
-; ---- sin table: 256 entries, sin(a)*63 as signed byte; cos(a) = sin((a+64)&255) ----
+; ---- sin table: 256 entries, sin(a)*127 as signed byte; cos(a) = sin(a + quarter turn) ----
 sintab:
-    db 0,2,3,5,6,8,9,11,12,14,15,17,18,20,21,23,24,26,27,28
-    db 30,31,32,34,35,36,38,39,40,41,42,43,45,46,47,48,49,50,51,52
-    db 52,53,54,55,56,56,57,58,58,59,59,60,60,61,61,61,62,62,62,63
-    db 63,63,63,63,63,63,63,63,63,63,62,62,62,61,61,61,60,60,59,59
-    db 58,58,57,56,56,55,54,53,52,52,51,50,49,48,47,46,45,43,42,41
-    db 40,39,38,36,35,34,32,31,30,28,27,26,24,23,21,20,18,17,15,14
-    db 12,11,9,8,6,5,3,2,0,254,253,251,250,248,247,245,244,242,241,239
-    db 238,236,235,233,232,230,229,228,226,225,224,222,221,220,218,217,216,215,214,213
-    db 211,210,209,208,207,206,205,204,204,203,202,201,200,200,199,198,198,197,197,196
-    db 196,195,195,195,194,194,194,193,193,193,193,193,193,193,193,193,193,193,194,194
-    db 194,195,195,195,196,196,197,197,198,198,199,200,200,201,202,203,204,204,205,206
-    db 207,208,209,210,211,213,214,215,216,217,218,220,221,222,224,225,226,228,229,230
-    db 232,233,235,236,238,239,241,242,244,245,247,248,250,251,253,254
+    db 0,3,6,9,12,16,19,22,25,28,31,34,37,40,43,46,49,51,54,57
+    db 60,63,65,68,71,73,76,78,81,83,85,88,90,92,94,96,98,100,102,104
+    db 106,107,109,111,112,113,115,116,117,118,120,121,122,122,123,124,125,125,126,126
+    db 126,127,127,127,127,127,127,127,126,126,126,125,125,124,123,122,122,121,120,118
+    db 117,116,115,113,112,111,109,107,106,104,102,100,98,96,94,92,90,88,85,83
+    db 81,78,76,73,71,68,65,63,60,57,54,51,49,46,43,40,37,34,31,28
+    db 25,22,19,16,12,9,6,3,0,253,250,247,244,240,237,234,231,228,225,222
+    db 219,216,213,210,207,205,202,199,196,193,191,188,185,183,180,178,175,173,171,168
+    db 166,164,162,160,158,156,154,152,150,149,147,145,144,143,141,140,139,138,136,135
+    db 134,134,133,132,131,131,130,130,130,129,129,129,129,129,129,129,130,130,130,131
+    db 131,132,133,134,134,135,136,138,139,140,141,143,144,145,147,149,150,152,154,156
+    db 158,160,162,164,166,168,171,173,175,178,180,183,185,188,191,193,196,199,202,205
+    db 207,210,213,216,219,222,225,228,231,234,237,240,244,247,250,253
