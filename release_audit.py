@@ -6,7 +6,7 @@ s=(r/"showcase.asm").read_text()
 i=(r/"intro256.asm").read_text()
 errors=[]
 for f in ["showcase.asm","intro256.asm","build.sh","run-dosbox.sh","DOSBOX.CONF",
-          "README.md","TECHNICAL.md","FINAL_REVIEW.md","audit.py","audit_final.py",
+          "README.md","TECHNICAL.md","CHANGELOG.md","audit.py","audit_final.py",
           "tests/emu_test.py","tests/run_tests.sh"]:
     if not (r/f).exists(): errors.append("missing "+f)
 targets=["scene_plasma","scene_tunnel","scene_xor","scene_moire","scene_checker",

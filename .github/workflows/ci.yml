@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install NASM
+        run: sudo apt-get update && sudo apt-get install -y nasm
+      - name: Build and static audits
+        run: |
+          ./build.sh
+          python3 release_audit.py
+          python3 audit_final.py
+      - name: Behavioural tests (emulated 16-bit CPU)
+        run: tests/run_tests.sh
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: uber40k-com
+          path: |
+            UBER256.COM
+            UBERSHOW.COM
+            SHA256SUMS

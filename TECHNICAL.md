@@ -1,81 +1,154 @@
-# Low-level notes
+# Technical notes
 
-## DOS COM execution
+Implementation notes for `showcase.asm` (and, where relevant, `intro256.asm`).
+Both are 16-bit real-mode DOS `.COM` programs targeting a 386+ instruction set.
 
-DOS loads a COM image at offset `0100h` of its program segment. `CS`, `DS`, `ES`, and `SS` initially describe the program's PSP environment, but this demo explicitly installs `ES=A000h` before framebuffer stores. `ORG 100h` tells NASM to calculate labels for that load convention; it does not emit a header.
+## Contents
+1. [COM model and memory](#com-model-and-memory)
+2. [Frame loop and presentation](#frame-loop-and-presentation)
+3. [Palette](#palette)
+4. [Scene sequencing](#scene-sequencing)
+5. [3D engine](#3d-engine)
+6. [Starfield, bounce and cores](#starfield-bounce-and-cores)
+7. [Music](#music)
+8. [Input and shutdown](#input-and-shutdown)
+9. [Pitfalls worth remembering](#pitfalls-worth-remembering)
 
-## VGA framebuffer
+## COM model and memory
 
-Mode 13h is packed-pixel VGA: 320*200 = 64,000 byte pixels. `ES:DI` is therefore a natural streaming destination. `STOSB` writes AL to `ES:[DI]` and advances DI when the direction flag is clear. DOS normally enters applications with DF clear; production code that must tolerate arbitrary callers can issue `CLD`, at a one-byte size cost.
+DOS loads a COM image at `100h` of its PSP segment; `ORG 100h` makes NASM compute
+labels for that. A `.COM` initially owns all free conventional memory, so `start:`
+shrinks its own block (`INT 21h AH=4Ah`) to 16 KiB and moves onto a stack inside
+it. Nothing is allocated from DOS afterwards: video RAM is the only large buffer.
+The image is ~8 KB, so the 16 KiB block leaves headroom for the stack.
 
-## Palette DAC
+## Frame loop and presentation
 
-Writing zero to `3C8h` selects DAC entry zero. Subsequent writes to `3C9h` are consumed as R,G,B triplets and automatically advance the palette index. The generated palette intentionally uses modular six-bit ramps rather than storing 768 bytes of palette data.
+Mode 13h is 320x200x8 at `A000:0000`. Graphics Controller register 6 (port `3CEh`)
+is read-modify-written with `and al,0F3h`, clearing Memory Map Select so the CPU
+window becomes 128K: segments `A000h` **and** `B000h` both reach VGA memory,
+giving two 64,000-byte pages. Each frame renders into the hidden page, then
+`present:`:
 
-## Retrace
+1. writes the CRTC start address (index **`0Ch` = high**, **`0Dh` = low**; page 1
+   is `4000h` in chain-4 units of 4 bytes),
+2. waits for vertical retrace (`3DAh` bit 3),
+3. runs `palette_tick` (inside the blank), then increments the frame counter `bp`,
+   steps the music and polls Esc.
 
-Input Status Register 1 is available at `3DAh`; bit 3 reflects vertical retrace. The showcase first waits until outside retrace and then until retrace begins. This gives one unambiguous edge per rendered frame. It is synchronization, not a guarantee that rendering itself fits one refresh interval.
+The start address is written before the retrace wait because some hardware latches
+it at retrace start; writing after leaves the flip a frame late. A scanline is
+320 bytes so `65536 + 199*320 = 129216` bytes fit the 128K window. Some clones
+mirror the first 64K twice; there is no fallback.
 
-## Sizecoding trade-offs
+`bp` is the single frame clock. It is incremented only in `present:` and every
+routine that uses `pusha` preserves it, so visuals, palette and music stay in
+phase.
 
-A 256-byte intro optimizes encoded bytes rather than conventional software structure. Registers carry several meanings over their lifetime; arithmetic overflow is useful; tables and abstractions are expensive; direct hardware access replaces APIs. Such code is intentionally unlike maintainable application code.
+Overlays run after the scene and before presentation, in this order: raster bars
+(not in the 3D scenes), scene-progress strip, shutter wipe, scroller. The scroller
+is last so a wipe can never cover it.
 
-## CPU baseline
+## Palette
 
-The sources declare a 386+ target because the compact arithmetic uses later x86 instruction forms. They remain 16-bit real-mode programs; 386+ refers to the instruction set, not 32-bit protected mode.
+`palette_tick` writes the DAC (`3C8h`/`3C9h`, 6-bit components) every frame:
 
+- **Fixed table first** (`fixed_pal`, 41 entries, indices 1-41): UI colours (1
+  black, 2 white, 3 grey, 4-7 scroller rainbow), the shading ramp (8-23), the sky
+  gradient (24-39) and two star shades (40-41). UI entries stay at full
+  brightness during a fade; scene-art entries are scaled by `v*(limit+1)/64`.
+  Scaling, not clamping, keeps hue (clamping `(20,8,28)` at 16 gives
+  `(16,8,16)`).
+- **Animated sweep second**, indices 42-255 only, skipped entirely in scenes 15-16.
 
-## Frame presentation accuracy
+Order matters: the sweep is ~640 port writes, longer than vertical blank. When it
+ran first the DAC changed part-way down the screen (a visible horizontal tear
+in DOSBox that the emulator tests cannot see). The fixed table is ~125 writes and
+fits the blank.
 
-`wait_vsync` waits for the beginning of vertical retrace before `present:` flips the CRTC start-address register to show the page that was just rendered. This is true hardware page flipping — no software backbuffer copy, no tearing. The CRTC update lands inside vertical blank, so the display switches pages at the moment the monitor is already in the non-visible region.
+Fade: `pal_limit` ramps 0..63 over the first 32 frames of each 512-frame scene and
+back down over the last 32. This also covers the very first frame, so no extra
+global fade-in is needed.
 
-Scene changes use a palette-domain fade envelope. The renderer therefore pays no second full-frame blend pass: DAC output is clamped toward black for 32 frames before/after each 512-frame boundary while the procedural effect clock remains continuous.
+## Scene sequencing
 
+`cur_scene = (bp >> SCENE_SHIFT) mod SCENE_COUNT` (9 and 18), computed once per
+frame with `DIV` and shared by dispatch, the progress strip and the music
+transposition. Because `bp` is 16-bit, one clock cycle is 128 scene slots and
+`128 mod 18 = 2`, so after ~15.6 minutes scenes 0-1 repeat once at the wrap. This
+is documented rather than fixed. `SCENE_SHIFT` must stay at least 2 (the palette
+code shifts by `SCENE_SHIFT-2`).
 
-## Register-lifetime audit
+Scenes 1-15 and 18 fill all 64,000 pixels with a `STOSB` loop and `jmp overlay`.
+Scenes 16-17 clear with `fill_sky` and draw 3D content instead.
 
-Rendering loads ES with the current hidden VGA page segment (A000h or B000h) once at frame start. Individual effects may freely reuse AX/BX/CX/DX/SI because STOSB addresses ES:DI; BX is not a persistent framebuffer pointer. Every full-screen scene uses a 320 x 200 loop and emits exactly 64,000 STOSB writes before overlays; scene_cube and scene_starfield clear the page with `rep stosw` and draw 3D objects instead.
+## 3D engine
 
-## Presentation choreography
+- **Rotation**: `sincos16` interpolates a 256-entry sine table (values x127) from a
+  16-bit angle, so the pose changes every frame. Two-axis rotation per vertex.
+- **Projection**: `screen = centre + rotated*SCALE / (depth+EYE)`, `CWD`/`IDIV`.
+  Depth is clamped to at least 40 and coordinates are clamped, so the divisor can
+  never be zero.
+- **Culling**: face normals come from the *rotated* vertices and are tested against
+  the real eye vector (not just the sign of normal-Z).
+- **Lighting**: one directional light, `n.L / (|n||L|)` in 32-bit integers; the
+  normal length of a regular solid is a precomputed constant (`obj_norml`), so no
+  square root. Result selects one of 16 ramp entries; outlines use step 15.
+  Faces are wound outward; the tables were generated and checked by script.
+- **Fill**: `fill_poly` walks each edge in 8.8 fixed point filling `poly_min`/
+  `poly_max` row arrays, then `REP STOSB`s spans, clipped to the page.
+- **Lines**: `draw_line` is the Bresenham `dx+dy` form with `e2` computed once per
+  iteration, bounds-checked per pixel (tested against an oracle over ~50k lines).
+- Solid for three quarters of each scene, wireframe for the last (`bp & 180h`).
 
-Version 5.0 combines two transition mechanisms. `palette_tick` performs the inexpensive DAC-domain fade, while `transition_wipe` covers symmetric top/bottom scanline regions during the first and last 16 frames of each 512-frame scene. `scene_marker` renders eighteen tiny progress blocks directly into the hidden page. `scroll_draw` runs last of the overlays, after `transition_wipe`, so the bottom scroller is never covered by the scene-cut shutter bars. All four overlays execute after the scene renderer and before the retrace/presentation path, so they cannot leave stale pixels between scenes.
+## Starfield, bounce and cores
 
-## Perspective projection (scene_cube)
+32 stars; each star's depth `Z = 255 - ((3*bp + 37*i) mod 240)` is derived from the
+frame clock alone, so there is no per-star state. (`DIV` leaves the quotient in AX
+and the *remainder* in DX; the remainder, 0..239, is what is used, so `Z` is
+16..255 and never zero.)
 
-Unlike the field scenes, `scene_cube` needs genuine 3D math. Two rotations (Y axis,
-then X axis) are applied per vertex using one shared 256-entry sine table; cosine
-is read from the same table at a 64-step (quarter-turn) offset rather than keeping
-a second table. Each rotation stage is a standard 2D rotation matrix in fixed point:
-multiply by the sine/cosine byte (range -63..63), sum, then `SAR` by 6 to undo the
-implicit x64 scale. Products stay well within a signed 16-bit range throughout,
-since a rotation can't increase a vector's magnitude beyond its original length.
+In the wireframe phase `star_bounce` mirrors any star that has entered a field
+(radius 56 at the cube, 36 at the octahedron, distance measured as `max+min/2`) to
+the same depth outside it, and flags it to flash. A solid core (`core_*_verts`,
+`obj_norml` set for its size) is rendered under the wire edges. Stars closer than
+`Z=150` add a trail pixel towards the vanishing point.
 
-Projection is a true perspective divide, not orthographic: `screen = centre +
-(rotated * SCALE) / (depth + EYE_DIST)`, using `CWD`/`IDIV` for the signed 16-bit
-division. `EYE_DIST=160` keeps the divisor comfortably positive (vertices stay
-within roughly +-70 along any axis after rotation, so depth+160 never approaches
-zero) regardless of the current rotation angle. Each vertex's post-rotation depth
-is also cached (`proj_z`) so each of the 12 edges can pick a bright-vs-dim colour
-from the average depth of its two endpoints, giving simple depth cueing without
-implementing real hidden-line removal.
+## Music
 
-Edges are drawn with a from-scratch Bresenham line routine (the `dx+dy` err-term
-variant), operating entirely through memory-resident state rather than registers,
-since the routine has more live values (current x/y, both deltas, both step
-signs, the error term) than the six general-purpose 16-bit registers can hold at
-once without juggling. It bounds-checks every pixel before plotting, so an
-out-of-range projected point can never corrupt memory outside the backbuffer --
-a deliberate defensive measure after the `scene_feedback` backbuffer-overrun bug
-found during this project's audit.
+OPL2 at `388h`/`389h`, with the required write delays. Four 2-operator melodic
+channels plus rhythm mode (register `0BDh`: kick 10h, snare 08h, tom 04h, cymbal
+02h, hat 01h).
 
-## Reserved DAC indices
+- Timing: 8 frames per step, 32 steps per bar, 4 bars (Am | C | G | Em, ~15 s).
+  A step fires at `bp%8==0`; key-off for the gap lands at `bp%8==6`.
+- Notes are packed `fnum | block<<10`. An octave is `+400h`; the block field is 3
+  bits, so two act transpositions already reach block 7 and the echo cannot move
+  up further.
+- Patches have connection bit **0** (true FM; 1 would be additive). `opl_set_instrument`
+  takes a channel and an 11-byte patch.
+- Everything stays in A minor pentatonic, so the voices cannot clash. The bass
+  plays chord roots, the pad chord tones, the echo repeats the lead two steps late
+  from frame 24 on, hats add off-beat sixteenths after bar 1, bar 3 has a
+  syncopated kick and bar 4 ends with a snare/tom fill.
+- `opl_silence` keys off all nine channels and clears rhythm at init and exit.
 
-`palette_tick`'s main loop animates all 256 DAC entries from one continuous
-formula every frame, which looks good for the procedural fields but gives no
-index a guaranteed-stable colour. Indices 1-7 are overridden immediately after
-that loop runs, every frame, to fixed values: 1=black, 2=white, 3=dim grey, and
-4-7 a small fixed rainbow. The text scroller and scene_cube's wireframe use only
-these reserved indices, so they stay legible regardless of what the animated
-palette is doing elsewhere. This was added after visually confirming in DOSBox
-that the scroller/cube, when using plain animated indices, could lose contrast
-whenever the animation happened to converge those indices to similar tones.
+## Input and shutdown
+
+Esc is read from the 8042 (`64h` status, `60h` data). IRQ1 is masked at the PIC for
+the duration, because the BIOS handler otherwise drains the controller first and
+Esc is almost never seen. Exit silences the chip, restores IRQ1 and text mode and
+returns through DOS.
+
+## Pitfalls worth remembering
+
+- 32-bit register use in 16-bit code leaves upper halves dirty; do address
+  arithmetic in 16-bit.
+- 16-bit `cmp`/`test ax` right after an 8-bit write to AL/AH is a bug; `audit.py`
+  lints for it.
+- `SI`/`DI` have no byte halves in 16-bit mode.
+- Static audits are text matching only. They passed while a drum pattern never
+  fired and while the palette tore. Behaviour needs the emulator tests; look needs
+  a real DOSBox run.
+- A merge that combines individually reasonable hunks can still fail to assemble;
+  always rebuild after merging.
