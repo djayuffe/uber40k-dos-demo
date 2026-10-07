@@ -73,12 +73,14 @@ global fade-in is needed.
 
 ## Scene sequencing
 
-`cur_scene = (bp >> SCENE_SHIFT) mod SCENE_COUNT` (9 and 18), computed once per
-frame with `DIV` and shared by dispatch, the progress strip and the music
-transposition. Because `bp` is 16-bit, one clock cycle is 128 scene slots and
-`128 mod 18 = 2`, so after ~15.6 minutes scenes 0-1 repeat once at the wrap. This
-is documented rather than fixed. `SCENE_SHIFT` must stay at least 2 (the palette
-code shifts by `SCENE_SHIFT-2`).
+`cur_scene` is a 0..17 byte counter advanced in `present:` once every `2^SCENE_SHIFT`
+frames (512, ~7.3 s) and wrapped at `SCENE_COUNT`; the dispatch, the progress strip
+and the music transposition all read it, so they cannot disagree. It is deliberately
+not `(bp >> 9) mod 18`: `bp` is 16-bit, so that form has only 128 groups of 512
+frames and `128 mod 18 = 2`, which replayed scenes 0 and 1 once at every wrap of the
+clock (after ~15.6 minutes). `tests/emu_test.py wrap` runs across the wrap and checks
+the index never jumps. `SCENE_SHIFT` must stay at least 2 (the palette code shifts by
+`SCENE_SHIFT-2`).
 
 Scenes 1-15 and 18 use the field engine below; scenes 16-17 clear with `fill_sky` and draw 3D content.
 

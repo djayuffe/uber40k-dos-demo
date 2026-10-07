@@ -4,6 +4,14 @@ Releases are tagged `vX.Y.Z`; pushing a tag runs `.github/workflows/release.yml`
 which builds, audits, tests and attaches `UBER256.COM`, `UBERSHOW.COM` and
 `SHA256SUMS`. The notes for a tag are taken from its section below.
 
+## [1.2.2] - 2026-10-07
+
+### Fixed
+- **Scene sequence now loops cleanly.** The scene index was `(frame >> 9) mod 18` on a
+  16-bit clock, so after ~15.6 minutes scenes 0 and 1 repeated once at the wrap. It is
+  now an explicit 0..17 counter advanced every 512 frames. A new test runs across the
+  wrap and checks the index never jumps. (Removes the 1.0.0 known limitation.)
+
 ## [1.2.1] - 2026-10-07
 
 ### Changed
