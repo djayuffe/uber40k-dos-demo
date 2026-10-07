@@ -598,7 +598,7 @@ def test_exit_and_pacing():
     check(len(m.irq_writes) >= 2 and (m.irq_writes[0] & 2) and not (m.irq_writes[-1] & 2),
           "IRQ1 masked while running, unmasked again at exit")
     src = (ROOT / "showcase.asm").read_text()
-    blk = src[src.index("\npresent:\n"):src.index("    inc bp\n    call music_tick")]
+    blk = src[src.index("\npresent:\n"):src.index("    inc bp\n")]
     check(blk.index("out dx,al") < blk.index("call wait_vsync") < blk.index("call palette_tick"),
           "present: writes the CRTC start address BEFORE waiting for retrace (correct however the CRTC latches), palette after")
 
