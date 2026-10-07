@@ -462,6 +462,13 @@ present:
     ; (IBM VGA reference / FreeVGA). Page 1 = byte offset 65536 = 4000h in
     ; chain-4 units, so it is written as 0Ch=40h, 0Dh=00h. Swapping the two
     ; would display page 0 shifted by 256 bytes and never show page 1.
+    mov al,[beat]                 ; screen shake: the kick pushes the display down
+    shr al,3                      ; 0..3 rows (one row = 80 start-address units),
+    jz .noshake                   ; settling back as the beat decays. The rows that
+    mov cl,80                     ; scroll in at the bottom lie outside both pages
+    mul cl                        ; and are black.
+    add bx,ax
+.noshake:
     mov dx,3D4h
     mov al,0Ch
     out dx,al
@@ -692,7 +699,10 @@ fieldW:
     mov [wr1],ax
     mov ax,[w_p2]
     mov [wr2],ax
-    mov ax,[w_p3]
+    mov al,[beat]                 ; the row wave jumps by up to 16 steps on a kick
+    xor ah,ah                     ; and settles back: the bands visibly bounce
+    shl ax,7
+    add ax,[w_p3]
     mov [wr3],ax
     xor di,di
     xor bh,bh
@@ -942,6 +952,13 @@ palette_tick:
     shl bx,1
     mov [pal_limit],bl
 .pal_begin:
+    xor al,al                     ; beat flash: scene art lifts by beat>>3 after a
+    cmp byte [pal_limit],63       ; kick, but never while the scene is fading
+    jne .nb
+    mov al,[beat]
+    shr al,3
+.nb:
+    mov [beat_boost],al
     ; Fixed entries go FIRST: they are all the 3D scenes use, and these ~125
     ; port writes fit inside the vertical blank we are called in. The long
     ; animated sweep (~640 writes) used to run first and spilled into the visible
@@ -1037,7 +1054,11 @@ palette_tick:
     inc ah                        ; clamping each component: a clamp turns e.g.
     mul ah                        ; (20,8,28) into (16,8,16) and shifts the hue
     shr ax,6                      ; (the maroon sky seen mid-fade); scaling just
-.fo_emit:                         ; darkens it. Exact (v) when limit = 63.
+    add al,[beat_boost]           ; darkens it. Exact (v) when limit = 63 and no
+    cmp al,63                     ; beat. Scene art also brightens on each kick
+    jbe .fo_emit                  ; (beat_boost 0..3), clamped to the 6-bit DAC.
+    mov al,63
+.fo_emit:
     out dx,al
     ret
 .limit:
@@ -1465,9 +1486,7 @@ star_pass:
     mov word [star_idx],0
     xor si,si
 .st_loop:
-    mov ax,bp
-    mov cx,3
-    mul cx
+    mov ax,[star_phase]
     mov cx,[star_idx]
     imul cx,37
     add ax,cx
@@ -1558,6 +1577,16 @@ star_pass:
     mov [star_idx],ax
     cmp ax,STAR_COUNT
     jb .st_loop
+    mov al,[beat]                 ; the stars fly by at 3 depth units a frame,
+    shr al,2                      ; surging by up to 7 more right after a kick
+    xor ah,ah
+    add ax,3
+    add ax,[star_phase]
+    cmp ax,240
+    jb .ph_ok
+    sub ax,240
+.ph_ok:
+    mov [star_phase],ax
     popa
     ret
 
@@ -2237,6 +2266,9 @@ opl_init:
     mov cl,3
     mov si,inst_echo
     call opl_set_instrument
+    mov cl,4
+    mov si,inst_arp
+    call opl_set_instrument
     mov cl,6
     mov si,inst_bd
     call opl_set_instrument
@@ -2330,6 +2362,12 @@ opl_note_off:
 ; bits clear (a brief silence so the next note has a real attack); at bp%8 == 0
 ; the step boundary fires every voice.
 music_tick:
+    mov al,[beat]                 ; the kick sets beat to 31; it decays 2 a frame
+    sub al,2                      ; and drives the visual effects (screen shake,
+    jnc .beat_ok                  ; palette flash, star surge, wave ripple)
+    xor al,al
+.beat_ok:
+    mov [beat],al
     mov ax,bp
     and ax,7
     cmp ax,6
@@ -2355,6 +2393,7 @@ music_tick:
     call bass_step
     call pad_step
     call echo_step
+    call arp_step
     call drum_step
 .mt_done:
     ret
@@ -2364,6 +2403,8 @@ music_tick:
     mov cl,1
     call opl_note_off
     mov cl,3
+    call opl_note_off
+    mov cl,4
     call opl_note_off
     mov al,[opl_bd_base]
     mov ah,0BDh
@@ -2459,6 +2500,32 @@ echo_step:
     call opl_note_off
     ret
 
+; ARP (channel 4), from the second act on (scene 9 onwards): the bar's four
+; chord tones plucked in a 16th-note arpeggio. It reuses the pad's chord table, so
+; it can never leave the chord; the act transposition applies as for the others.
+arp_step:
+    cmp byte [cur_scene],8
+    jb .ar_rest
+    mov ax,[m_step]
+    mov cl,5
+    shr ax,cl
+    and ax,3                      ; bar 0..3
+    shl ax,3                      ; 4 words per bar
+    mov si,ax
+    mov bx,[m_step]
+    and bx,3
+    shl bx,1
+    add si,bx
+    mov ax,[pad_chords+si]
+    add ax,[m_trans]
+    mov cl,4
+    call opl_note_on
+    ret
+.ar_rest:
+    mov cl,4
+    call opl_note_off
+    ret
+
 ; RHYTHM: kick on the downbeat, snare on the backbeat, hi-hat on the off-beats;
 ; a tom+snare fill through the last 8 steps of bar 4; a cymbal crash on the first
 ; step of bar 1 to mark the top of the form. One 0BDh write per step.
@@ -2499,6 +2566,15 @@ drum_step:
     jne .dr_nosync
     or cl,10h                     ; syncopated extra kick, bar 3
 .dr_nosync:
+    cmp byte [cur_scene],8        ; from the second act: a kick on steps 10 and 26
+    jb .dr_noact                  ; of every bar too (a driving off-beat pattern)
+    cmp dx,10
+    je .dr_act
+    cmp dx,26
+    jne .dr_noact
+.dr_act:
+    or cl,10h
+.dr_noact:
     cmp ax,3
     jne .dr_nofill
     cmp dx,24
@@ -2511,6 +2587,10 @@ drum_step:
     jnz .dr_write
     or cl,02h                     ; crash cymbal at the top of the form
 .dr_write:
+    test cl,10h
+    jz .dr_nobeat
+    mov byte [beat],31            ; a kick: start the visual beat envelope
+.dr_nobeat:
     mov al,cl
     mov ah,0BDh
     call opl_write
@@ -2556,6 +2636,9 @@ show_page db 0                    ; which page present: just flipped to
 pal_limit db 63
 pic_mask db 0
 m_step dw 0                       ; global music step 0..127 (see music_tick)
+beat db 0                         ; 31 on each kick, decays 2 a frame (visual sync)
+beat_boost db 0                   ; palette lift (0..3) derived from beat, this frame
+star_phase dw 0                   ; starfield depth phase, 0..239, surges on the beat
 m_trans dw 0                      ; act transposition for this step, in packed-note units
 cur_scene db 0                    ; current scene 0..17, advanced in present:;
                                    ; shared with scene_marker/music_tick so
@@ -2568,6 +2651,7 @@ inst_lead db 01h,16h,0F4h,74h,00h, 41h,00h,0F3h,65h,00h, 04h   ; FM, feedback 2,
 inst_bass db 01h,0Eh,0F2h,75h,00h, 01h,00h,0F2h,66h,01h, 02h   ; FM, half-sine carrier for bite
 inst_echo db 01h,20h,0F2h,75h,00h, 01h,14h,0F2h,75h,00h, 04h   ; FM, softer than the lead
 inst_pad  db 21h,2Ch,43h,66h,00h, 61h,12h,33h,35h,00h, 00h    ; sustained, low mod index, vibrato
+inst_arp  db 01h,1Ah,0F8h,55h,00h, 01h,00h,0F8h,56h,00h, 06h   ; FM pluck: fast attack and decay
 inst_bd   db 01h,00h,0F0h,55h,00h, 01h,00h,0F0h,55h,00h, 00h
 inst_sd   db 0Dh,00h,0F0h,33h,02h, 0Dh,00h,0F0h,33h,02h, 00h
 

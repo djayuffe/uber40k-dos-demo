@@ -38,9 +38,13 @@ DOSBox (`mount c .`, `c:`, `UBERSHOW.COM`), or build it yourself:
   octahedron over a night-sky gradient with a starfield.
 - **Wireframe phase**: the objects turn into hollow force-fields. Stars bounce off
   them, and a small solid core spins inside each.
-- **OPL2 FM music**: lead, bass, pad and echo voices plus the chip's rhythm section,
-  over a 4-bar progression (Am | C | G | Em), with a fill and a cymbal crash.
-  Talks to the chip directly at `388h`, so it works on any Sound Blaster or AdLib.
+- **OPL2 FM music**: five FM voices (lead, bass, pad, echo and, from the second act, a 16th-note
+  chord arpeggio) plus the chip's rhythm section, over a 4-bar progression (Am | C | G | Em),
+  with a fill, a cymbal crash and driving off-beat kicks in the later acts. Talks to the chip
+  directly at `388h`, so it works on any Sound Blaster or AdLib.
+- **Everything moves with the kick**: the display jolts down by up to three rows (a CRTC
+  start-address shake), the scene art flashes, the starfield surges forward and the wave
+  fields bounce.
 - **True hardware double buffering**: 128K VGA window and CRTC page flip. No blit,
   no DOS allocation.
 - **Sine-wave scroller** with a hand-made 5x7 font, scene fades and shutter transitions.

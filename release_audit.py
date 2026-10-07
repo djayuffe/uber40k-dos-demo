@@ -23,7 +23,7 @@ for x in ["call wait_vsync","call palette_tick","call music_tick",
           "and al,0F3h","vga_page db 0","show_page db 0","mov dx,3D4h","mov dx,3CEh",
           # OPL2 FM music (Sound Blaster / AdLib): lead/bass/pad + rhythm
           "opl_write:","opl_init:","opl_note_on:","opl_note_off:","mov dx,388h",
-          "opl_set_instrument:","lead_step:","bass_step:","pad_step:","echo_step:","drum_step:","opl_silence:",
+          "opl_set_instrument:","lead_step:","bass_step:","pad_step:","echo_step:","arp_step:","drum_step:","opl_silence:",
           "star_bounce:","draw_core_octa:","draw_core_cube:","render_faces:","fill_poly:","sincos16:","fill_sky:","star_pass:"]:
     if x not in s: errors.append("missing invariant "+x)
 if "org 100h" not in s.lower() or "bits 16" not in s.lower(): errors.append("showcase COM model")

@@ -23,7 +23,7 @@ required=[
 # simultaneous voices (lead/bass/pad) plus the built-in rhythm section
 "opl_write:","opl_init:","opl_note_on:","opl_note_off:","mov dx,388h",
 "opl_set_instrument:","chan_op1 db","chan_op2 db","lead_step:","bass_step:","pad_step:",
-"echo_step:","drum_step:","lead_notes:","bass_pat db","pad_chords dw","fill_poly:","edge_rows:",
+"echo_step:","arp_step:","drum_step:","lead_notes:","bass_pat db","pad_chords dw","fill_poly:","edge_rows:",
 "render_faces:","sincos16:","put_pixel:","fill_sky:","star_pass:","fixed_pal:","inst_lead db","inst_bass db","inst_pad","inst_bd","inst_sd",
 "mov ah,0BDh","opl_silence:","inst_echo db",
 ]

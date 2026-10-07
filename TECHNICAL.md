@@ -141,7 +141,7 @@ the same depth outside it, and flags it to flash. A solid core (`core_*_verts`,
 
 ## Music
 
-OPL2 at `388h`/`389h`, with the required write delays. Four 2-operator melodic
+OPL2 at `388h`/`389h`, with the required write delays. Five 2-operator melodic
 channels plus rhythm mode (register `0BDh`: kick 10h, snare 08h, tom 04h, cymbal
 02h, hat 01h).
 
@@ -157,6 +157,23 @@ channels plus rhythm mode (register `0BDh`: kick 10h, snare 08h, tom 04h, cymbal
   from frame 24 on, hats add off-beat sixteenths after bar 1, bar 3 has a
   syncopated kick and bar 4 ends with a snare/tom fill.
 - `opl_silence` keys off all nine channels and clears rhythm at init and exit.
+- **Arp** (channel 4) plays from the second act (scene 9) on: the bar's four chord tones as a
+  16th-note arpeggio, read from the pad's chord table, so it cannot leave the chord. From
+  that act the kick also lands on steps 10 and 26 of every bar.
+
+### Kick-synced effects
+
+`drum_step` sets `beat = 31` on every kick; `music_tick` decays it by 2 a frame, and
+four effects read it:
+
+- **Shake**: `present:` adds `80 * (beat >> 3)` to the CRTC start address, i.e. 0-3 rows
+  (one row is 80 start-address units). The rows that scroll in lie outside both pages
+  (`64000 + 3*320 < 65536`, and page 1 ends well inside the 128K window) and are black.
+- **Flash**: `palette_tick` adds `beat >> 3` (0-3) to scene-art entries after the fade
+  scaling, clamped to 63. UI colours never flash, and nothing flashes while a scene fades.
+- **Surge**: the starfield depth phase `star_phase` advances by `3 + (beat >> 2)` per
+  frame and is kept in 0..239, so there is no jump at any wrap.
+- **Ripple**: `fieldW` offsets the row wave phase by `beat << 7`, so the bands bounce.
 
 ## Input and shutdown
 

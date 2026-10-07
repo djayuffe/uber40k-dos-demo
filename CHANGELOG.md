@@ -4,6 +4,16 @@ Releases are tagged `vX.Y.Z`; pushing a tag runs `.github/workflows/release.yml`
 which builds, audits, tests and attaches `UBER256.COM`, `UBERSHOW.COM` and
 `SHA256SUMS`. The notes for a tag are taken from its section below.
 
+## [1.3.0] - 2026-10-07
+
+### Added
+- **Arpeggio voice** (OPL channel 4) from the second act: the bar's chord tones as plucked
+  16th notes, plus extra kicks on steps 10 and 26 of every bar. Verified in tune and in
+  chord by the music tests.
+- **Kick-synced effects**: screen shake (CRTC start-address jolt), scene-art flash,
+  starfield surge and wave-field ripple, all driven by one decaying `beat` value.
+  Tests check each one, including that nothing flashes during a scene fade.
+
 ## [1.2.2] - 2026-10-07
 
 ### Fixed

@@ -204,13 +204,13 @@ def test_music(frames=1100):
     print(f"  {m.flips} frames")
     log, opl = m.opl_log, m.opl
 
-    for ch, (a, b) in {0: (0, 3), 1: (1, 4), 2: (2, 5), 3: (8, 11), 6: (16, 19), 7: (17, 20), 8: (18, 21)}.items():
+    for ch, (a, b) in {0: (0, 3), 1: (1, 4), 2: (2, 5), 3: (8, 11), 4: (9, 12), 6: (16, 19), 7: (17, 20), 8: (18, 21)}.items():
         check(all((0x20 + o) in opl for o in (a, b)) and (0xC0 + ch) in opl, f"channel {ch} instrument programmed")
-    check(all(not (opl[0xC0 + c] & 1) for c in (0, 1, 2, 3)),
+    check(all(not (opl[0xC0 + c] & 1) for c in (0, 1, 2, 3, 4)),
           "melodic voices use true FM (connection bit 0), not additive")
 
-    voices = {c: decode_notes(log, c) for c in (0, 1, 2, 3)}
-    for c, nm in ((0, "lead"), (1, "bass"), (2, "pad"), (3, "echo")):
+    voices = {c: decode_notes(log, c) for c in (0, 1, 2, 3, 4)}
+    for c, nm in ((0, "lead"), (1, "bass"), (2, "pad"), (3, "echo"), (4, "arp")):
         check(voices[c], f"{nm} plays ({len(voices[c])} notes)")
     allnotes = [n for c in voices for n in voices[c]]
     check(max(n[2] for n in allnotes) < 15, f"every note in tune (worst {max(n[2] for n in allnotes):.1f} cents)")
@@ -234,6 +234,12 @@ def test_music(frames=1100):
     again = [(n[0] - 1032, n[1]) for n in lead if 1032 <= n[0] < 1096]
     check(len(first) > 5 and first == again, f"the form repeats exactly after 4 bars (first {len(first)} lead notes of pass 2 match pass 1)")
 
+    arp = voices[4]
+    check(len(arp) > 100, f"arp plays a 16th-note arpeggio in the later acts ({len(arp)} notes)")
+    check(all(n[1] in BARS[bar_of(n[0])][1] for n in arp), "arp plays only tones of the current chord")
+    check(all(n[0] % 8 == 0 for n in arp), "arp retriggers only on step boundaries")
+    check(len({n[1] for n in arp}) >= 3, f"arp moves through the chord ({sorted({n[1] for n in arp})})")
+
     # timing
     check(all(f % 8 == 0 for n in lead + voices[1] + voices[3] for f in [n[0]]), "lead/bass/echo retrigger only on step boundaries")
     check(all(f % 64 == 0 for f in [n[0] for n in voices[2]]), "pad changes every 8 steps")
@@ -248,9 +254,9 @@ def test_music(frames=1100):
     kick, snare, hat, tom, crash = hits(0x10), hits(0x08), hits(0x01), hits(0x04), hits(0x02)
     pos = lambda f: (f // 8) % 8
     inbar = lambda f: (f // 8) % 32
-    check(all(f % 8 == 0 and (pos(f) == 0 or (bar_of(f) == 2 and inbar(f) == 14)) for f in kick)
+    check(all(f % 8 == 0 and (pos(f) == 0 or inbar(f) in (10, 26) or (bar_of(f) == 2 and inbar(f) == 14)) for f in kick)
           and len([f for f in kick if pos(f) == 0]) >= frames // 64 - 1,
-          f"kick on every downbeat, plus one syncopated kick in bar 3 ({len(kick)} hits)")
+          f"kick on every downbeat, plus the syncopated kicks (steps 10/26 from act 2, step 14 in bar 3) ({len(kick)} hits)")
     snare_ok = all(pos(f) == 4 or (bar_of(f) == 3 and inbar(f) >= 24) for f in snare)
     check(snare and snare_ok, f"snare on the backbeat, plus the bar-4 fill ({len(snare)} hits)")
     hat_ok = all(pos(f) in (2, 6) if bar_of(f) == 0 else pos(f) not in (0, 4) for f in hat)
@@ -572,6 +578,48 @@ def test_scenes():
     check(not bad, f"every note within 30..4200 Hz across all acts {bad[:3]}")
     check(acts == {0, 1, 2}, f"the melodic voices actually played in all 3 acts (observed {sorted(acts)})")
 
+def test_effects():
+    print("\n== music-synced effects: shake, palette flash, star surge, wave ripple; act 1 has no arp ==")
+    com, lst = assemble(force_scene(15), "fx")
+    m = Machine(com, 200)
+    seq = []
+    def tap(mm, port, value):
+        if port == 0x3D4: seq.append(["idx", value])
+        elif port == 0x3D5 and seq and seq[-1][0] == "idx": seq[-1] = ("reg", seq[-1][1], value)
+    m.out_hooks.append(tap)
+    m.run(210)
+    regs = [(r[1], r[2]) for r in seq if r[0] == "reg" and r[1] in (0x0C, 0x0D)]
+    pairs = [(regs[i][1], regs[i + 1][1]) for i in range(0, len(regs) - 1, 2)]
+    lows = [lo for hi, lo in pairs[:60]]
+    check(set(lows) == {0}, "before the first kick the display start address is exactly the page base")
+    shaken = [lo for hi, lo in pairs[60:200] if lo]
+    check(shaken and {x for x in shaken} <= {80, 160, 240}, f"after a kick the display is pushed down 1-3 rows (low bytes {sorted(set(shaken))})")
+    check(max(shaken) == 240 and pairs[66][1] == 240, "the shake starts at full strength on the kick and settles back")
+    base, boosted = m.dac_at[63][1][24], m.dac_at[66][1][24]
+    check(base == (0, 0, 4) and boosted[2] > 4 and boosted[0] > 0, f"sky flashes brighter right after a kick ({base} -> {boosted})")
+    check(m.dac_at[100][1][24] == (0, 0, 4), "and settles back to its base colour")
+    check(m.dac_at[66][1][2] == (63, 63, 63) and m.dac_at[66][1][4] == (63, 0, 0), "UI colours do not flash")
+    # no flash while a scene fades in/out (a kick lands exactly on the scene start)
+    com2, lst2 = assemble(force_scene(15), "fx2")
+    m2 = Machine(com2, 20); m2.run(24)
+    check(m2.dac_at[10][1][24][2] <= 4, "no beat flash during the scene fade (art stays proportional)")
+    # star surge: depth phase advances by 3 per frame, up to 10 right after a kick, never leaves 0..239
+    ph = symbol(lst, "star_phase")
+    com3, lst3 = assemble(force_scene(16), "fx3")
+    m3 = Machine(com3, 140); phs = []
+    p3 = symbol(lst3, "star_phase")
+    m3.flip_hooks.append(lambda mm, page, f: phs.append(mm.rd16(p3)))
+    m3.run(150)
+    steps = [(b - a) % 240 for a, b in zip(phs, phs[1:])]
+    check(all(0 <= p < 240 for p in phs), "star phase always stays in 0..239")
+    check(min(steps) == 3 and max(steps) >= 9, f"stars drift at 3/frame and surge after a kick (steps {min(steps)}..{max(steps)})")
+    # act 1 (scenes 1-8): no arp, no extra kicks
+    com4, _ = assemble(force_scene(0), "fx4")
+    m4 = Machine(com4, 300); m4.run(310)
+    check(not decode_notes(m4.opl_log, 4), "no arp in the first act")
+    kicks = sorted({f for f, r, v in m4.opl_log if r == 0xBD and v & 0x10})
+    check(all((f // 8) % 8 == 0 or (f // 8) % 32 == 14 for f in kicks), "first act keeps the plain kick pattern")
+
 def test_wrap():
     print("\n== scene sequence across the 16-bit frame-clock wrap ==")
     com, lst = assemble([("%define SCENE_SHIFT 9", "%define SCENE_SHIFT 2"),
@@ -603,7 +651,7 @@ def test_exit_and_pacing():
           "present: writes the CRTC start address BEFORE waiting for retrace (correct however the CRTC latches), palette after")
 
 TESTS = {"lines": test_lines, "crtc": test_crtc, "math": test_math, "palette": test_palette, "gfx": test_gfx, "bounce": test_bounce, "fields": test_fields, "music": test_music,
-         "exit": test_exit_and_pacing, "scenes": test_scenes, "wrap": test_wrap}
+         "exit": test_exit_and_pacing, "scenes": test_scenes, "wrap": test_wrap, "effects": test_effects}
 
 if __name__ == "__main__":
     which = sys.argv[1:] or list(TESTS)
