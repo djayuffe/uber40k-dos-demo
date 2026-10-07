@@ -96,9 +96,6 @@ changed:
   off-screen) found 0 hangs and 0 wrong pixels.
 
 ### Known limitations
-- The scene index is `(frame >> 9) mod 18` on a 16-bit frame counter. 128 is not a
-  multiple of 18, so after ~15.6 minutes of continuous play scenes 0 and 1 repeat
-  once at the counter wrap before the cycle resumes.
 - Field scenes still run the ~640-write animated palette sweep after retrace, so
   very slow machines may show slight palette banding there.
 - Some VGA clones alias the two 64K pages; the demo has no fallback for that.

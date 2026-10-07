@@ -58,7 +58,7 @@ if not re.search(r"^exit:\n\s+call opl_silence", s, re.M):
     errors.append("exit: must call opl_silence first (else the OPL2 rings on after return to DOS)")
 if "call opl_silence" not in s.split("opl_init:")[1].split("ret")[0]:
     errors.append("opl_init must start from a silenced chip")
-pres = s[s.index("\npresent:\n"):s.index("    inc bp\n    call music_tick")]
+pres = s[s.index("\npresent:\n"):s.index("    inc bp\n")]
 if not (pres.index("out dx,al") < pres.index("call wait_vsync") < pres.index("call palette_tick")):
     errors.append("present: must write the CRTC start address before wait_vsync, palette after")
 if "mov es,ax\n    xor di,di" not in s:

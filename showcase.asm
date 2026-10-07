@@ -82,18 +82,9 @@ main:
 .haveseg:
     mov es,ax
     xor di,di
-    ; Scene index = (frame >> SCENE_SHIFT) mod SCENE_COUNT. SCENE_COUNT is not
-    ; a power of two (18 scenes), so this uses DIV instead of an AND mask;
-    ; the remainder (DL) is cached in cur_scene so scene_marker and
-    ; music_tick read the same value instead of recomputing it separately.
-    mov ax,bp
-    mov cl,SCENE_SHIFT
-    shr ax,cl
-    xor dx,dx
-    mov bx,SCENE_COUNT
-    div bx
-    mov [cur_scene],dl
-    mov al,dl
+    ; cur_scene is a 0..SCENE_COUNT-1 counter advanced in present: once per
+    ; 2^SCENE_SHIFT frames; scene_marker and music_tick read the same byte.
+    mov al,[cur_scene]
     cmp al,0
     je scene_plasma
     cmp al,1
@@ -486,6 +477,20 @@ present:
     call wait_vsync               ; new page is now what's on screen
     call palette_tick             ; DAC writes happen inside vertical blank
     inc bp
+    ; Advance the scene counter every 2^SCENE_SHIFT frames. It is a counter, not
+    ; (bp >> SCENE_SHIFT) mod SCENE_COUNT: bp is 16-bit, so that expression has
+    ; only 128 groups of 512 frames and 128 mod 18 = 2, which replayed scenes 0
+    ; and 1 once at every wrap of the frame clock.
+    test bp,(1 << SCENE_SHIFT) - 1
+    jnz .same_scene
+    mov al,[cur_scene]
+    inc al
+    cmp al,SCENE_COUNT
+    jb .scene_ok
+    xor al,al
+.scene_ok:
+    mov [cur_scene],al
+.same_scene:
     call music_tick
     call key_escape
     jnc main
@@ -2552,7 +2557,7 @@ pal_limit db 63
 pic_mask db 0
 m_step dw 0                       ; global music step 0..127 (see music_tick)
 m_trans dw 0                      ; act transposition for this step, in packed-note units
-cur_scene db 0                    ; scene index main: computed this frame,
+cur_scene db 0                    ; current scene 0..17, advanced in present:;
                                    ; shared with scene_marker/music_tick so
                                    ; they can't drift out of sync with it
 

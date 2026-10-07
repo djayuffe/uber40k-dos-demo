@@ -59,7 +59,7 @@ def symbol(lst, name):
     raise AssertionError(f"symbol {name} not found in listing")
 
 def force_scene(n):
-    return [("    mov [cur_scene],dl\n    mov al,dl\n", f"    mov byte [cur_scene],{n}\n    mov al,{n}\n")]
+    return [("    mov al,[cur_scene]\n    cmp al,0\n    je scene_plasma", f"    mov byte [cur_scene],{n}\n    mov al,{n}\n    cmp al,0\n    je scene_plasma")]
 
 # ----------------------------------------------------------------- machine
 class Machine:
@@ -572,6 +572,24 @@ def test_scenes():
     check(not bad, f"every note within 30..4200 Hz across all acts {bad[:3]}")
     check(acts == {0, 1, 2}, f"the melodic voices actually played in all 3 acts (observed {sorted(acts)})")
 
+def test_wrap():
+    print("\n== scene sequence across the 16-bit frame-clock wrap ==")
+    com, lst = assemble([("%define SCENE_SHIFT 9", "%define SCENE_SHIFT 2"),
+                         ("    call build_maps\n    xor bp,bp", "    call build_maps\n    mov bp,0FFC0h")], "wrap")
+    cs = LIN + symbol(lst, "cur_scene")
+    m = Machine(com, 160)
+    seq, bps = [], []
+    def hook(mm, page, f):
+        seq.append(mm.uc.mem_read(cs, 1)[0]); bps.append(mm.uc.reg_read(UC_X86_REG_BP))
+    m.flip_hooks.append(hook)
+    m.run(170, budget=4_000_000_000)
+    wrapped = any(b < a for a, b in zip(bps, bps[1:]))
+    steps = [(b - a) % 18 for a, b in zip(seq, seq[1:])]
+    check(wrapped, "the run crosses the wrap of the 16-bit frame clock")
+    check(set(steps) <= {0, 1}, f"scene index only ever stays or advances by one, including at the wrap (steps {sorted(set(steps))})")
+    check(len(seq) > 100 and seq.count(seq[0]) >= 1 and len(set(seq)) == 18, f"every one of the 18 scenes appears ({len(set(seq))})")
+    check(sum(steps) >= 36, f"scenes keep advancing after the wrap ({sum(steps)} advances)")
+
 def test_exit_and_pacing():
     print("\n== frame loop: flip ordering, exit ==")
     com, lst = assemble([], "exit")
@@ -585,7 +603,7 @@ def test_exit_and_pacing():
           "present: writes the CRTC start address BEFORE waiting for retrace (correct however the CRTC latches), palette after")
 
 TESTS = {"lines": test_lines, "crtc": test_crtc, "math": test_math, "palette": test_palette, "gfx": test_gfx, "bounce": test_bounce, "fields": test_fields, "music": test_music,
-         "exit": test_exit_and_pacing, "scenes": test_scenes}
+         "exit": test_exit_and_pacing, "scenes": test_scenes, "wrap": test_wrap}
 
 if __name__ == "__main__":
     which = sys.argv[1:] or list(TESTS)
