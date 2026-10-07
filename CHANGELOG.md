@@ -4,6 +4,15 @@ Releases are tagged `vX.Y.Z`; pushing a tag runs `.github/workflows/release.yml`
 which builds, audits, tests and attaches `UBER256.COM`, `UBERSHOW.COM` and
 `SHA256SUMS`. The notes for a tag are taken from its section below.
 
+## [1.2.1] - 2026-10-07
+
+### Changed
+- Housekeeping only; the demo binary behaves as before. The 256-byte intro moved to its
+  own repository, [uber256-dos-intro](https://github.com/djayuffe/uber256-dos-intro),
+  so this repo now builds and tests just `UBERSHOW.COM` (the size gate is the 40K budget).
+- Removed dead code (an unused define and variable), stale comments, and the test
+  scaffolding that only the intro used.
+
 ## [1.2.0] - 2026-10-05
 
 ### Changed

@@ -1,7 +1,8 @@
 # Technical notes
 
-Implementation notes for `showcase.asm` (and, where relevant, `intro256.asm`).
-Both are 16-bit real-mode DOS `.COM` programs targeting a 386+ instruction set.
+Implementation notes for `showcase.asm`, a 16-bit real-mode DOS `.COM` program targeting a
+386+ instruction set. (The 256-byte intro lives in its own repo,
+[uber256-dos-intro](https://github.com/djayuffe/uber256-dos-intro).)
 
 ## Contents
 1. [COM model and memory](#com-model-and-memory)

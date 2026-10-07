@@ -24,6 +24,5 @@ jobs:
         with:
           name: uber40k-com
           path: |
-            UBER256.COM
             UBERSHOW.COM
             SHA256SUMS

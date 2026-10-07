@@ -14,8 +14,6 @@ if ! command -v "$DOSBOX_BIN" >/dev/null 2>&1; then
     fi
 fi
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-# Default to the full showcase; pass UBER256.COM as $1 to run the strict
-# 256-byte intro instead.
 TARGET="${1:-UBERSHOW.COM}"
 
 # Combining `-conf DOSBOX.CONF` with separate `-c` autoexec flags on the

@@ -5,7 +5,7 @@ root=Path(__file__).resolve().parent
 errors=[]
 def need(name,s,needle,label):
     if needle not in s: errors.append(f"{name}: missing {label}")
-for name in ("intro256.asm","showcase.asm"):
+for name in ("showcase.asm",):
     s=(root/name).read_text()
     for needle,label in [("BITS 16","16-bit declaration"),("ORG 100h","COM origin"),("mov ax,13h","VGA mode 13h"),("0A000h","VGA framebuffer")]: need(name,s,needle,label)
     if re.search(r"\b(?:sil|dil|spl|bpl)\b",s,re.I): errors.append(f"{name}: x86-64 byte register in 16-bit source")
@@ -34,7 +34,7 @@ def lint_partial_ax(name, text):
     return out
 _SELFTEST = "    mov al,[x]\n    cmp ax,0\n"
 assert lint_partial_ax("selftest", _SELFTEST), "lint failed to flag the known-bad pattern"
-for name in ("intro256.asm", "showcase.asm"):
+for name in ("showcase.asm",):
     errors += lint_partial_ax(name, (root/name).read_text())
 print("static source audit:", "PASS" if not errors else "FAIL")
 for e in errors: print(" -",e)

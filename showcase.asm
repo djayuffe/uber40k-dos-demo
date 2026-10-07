@@ -9,7 +9,6 @@ ORG 100h
 %define SCROLL_BG 1                ; fixed black (see palette_tick reserved DAC entries)
 ; Scroller foreground cycles across fixed DAC indices 4..7 (a small rainbow,
 ; see palette_tick) rather than one fixed colour -- see scroll_draw.
-%define CUBE_BG 1                 ; fixed black background fill
 %define CUBE_FG 2                 ; fixed white, near-edge wireframe colour
 %define CUBE_FG_DIM 3             ; fixed dim grey, far-edge wireframe colour
 %define CUBE_EYE_DIST 160         ; perspective-divide distance from the eye
@@ -27,7 +26,7 @@ ORG 100h
 start:
     ; A .COM program owns ALL free conventional memory at launch (its PSP
     ; block spans to the top of the DOS arena). This demo renders into video
-    ; RAM directly (true page flip, see present:) and needs no DOS backbuffer,
+    ; RAM directly (true page flip, see present:) and needs no DOS-allocated buffer,
     ; but it keeps its code, data tables and a small local stack in
     ; conventional memory. Shrinking the PSP block to 16 KiB gives a bounded
     ; footprint and keeps the local stack (stack_top) inside a known region
@@ -53,7 +52,7 @@ start:
     ; and B000h both address real VGA memory -- two independent 64,000-byte
     ; pages. Each frame renders entirely into the currently-hidden page,
     ; then present: flips the CRTC start address to display it: a real
-    ; page flip, not a software backbuffer-to-A000h copy.
+    ; page flip, not a software copy into A000h.
     mov dx,3CEh
     mov al,6
     out dx,al
@@ -313,10 +312,10 @@ scene_vortex:
     call fieldS
     jmp overlay
 
-; 16: rotating wireframe cube. The only non-full-screen-field scene: it
-; clears the backbuffer to a flat colour first, then projects and draws a
-; true 3D object (two-axis rotation, orthographic projection, Bresenham
-; line draw) instead of a per-pixel procedural texture.
+; 16: the 3D engine scene. It clears the page with the night-sky gradient and
+; starfield, then draws real 3D objects (two-axis rotation, perspective
+; projection, culling, lighting, polygon fill, Bresenham lines) instead of a
+; per-pixel field.
 ; Two independent 3D objects sharing one engine (render_object): a cube and
 ; an octahedron, each spun by a different pair of angle rates and offset to
 ; opposite sides of the screen, so they visibly rotate differently rather
@@ -2678,7 +2677,6 @@ bnc_f dw 0
 star_z dw 0
 star_sx dw 0
 star_sy dw 0
-star_color db 0
 star_base_x dw -93,-10,-36,-98,129,66,-135,-39,108,-137,-49,129,-38,-8,-69,66
             dw -8,-40,-98,44,33,-15,85,-87,-110,0,35,-52,-115,-34,-110,-99
 star_base_y dw -89,-33,-60,78,-73,-87,-72,-36,59,48,88,12,19,-94,83,-8

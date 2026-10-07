@@ -4,7 +4,7 @@
 # Needs Python 3 + `unicorn`, installed into a throwaway ./.venv.
 set -eu
 cd "$(dirname "$0")/.."
-[ -f UBERSHOW.COM ] && [ -f UBER256.COM ] || ./build.sh
+[ -f UBERSHOW.COM ] || ./build.sh
 if [ ! -x .venv/bin/python ]; then
     python3 -m venv .venv
     .venv/bin/pip install -q unicorn

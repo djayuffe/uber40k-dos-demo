@@ -10,7 +10,7 @@ scene clock), and snapshots the displayed page.
 
     python3 -m venv .venv && .venv/bin/pip install unicorn
     .venv/bin/python tests/emu_test.py                 # everything
-    .venv/bin/python tests/emu_test.py music|gfx|math|scenes|exit|intro
+    .venv/bin/python tests/emu_test.py music|gfx|math|scenes|exit|lines|crtc|palette|bounce|fields
 """
 import sys, re, math, pathlib, subprocess, tempfile
 from unicorn import Uc, UC_ARCH_X86, UC_MODE_16, UC_HOOK_INSN, UC_HOOK_INTR, UC_HOOK_MEM_UNMAPPED
@@ -63,11 +63,11 @@ def force_scene(n):
 
 # ----------------------------------------------------------------- machine
 class Machine:
-    def __init__(self, com, esc_frame=10**9, frames_by_poll=False):
+    def __init__(self, com, esc_frame=10**9):
         self.opl, self.opl_log = {}, []
         self.opl_index = self.crtc_index = 0
         self.flips = self.vsync_reads = 0
-        self.esc_frame, self.frames_by_poll = esc_frame, frames_by_poll
+        self.esc_frame = esc_frame
         self.irq_writes, self.modes, self.sp_at_frame = [], [], []
         self.dac, self.dac_idx, self.dac_sub, self.dac_cur = {}, 0, 0, [0, 0, 0]
         self.dac_at = {}               # frame -> (bp the palette was computed from, DAC copy)
@@ -99,8 +99,6 @@ class Machine:
         if port == 0x3DA:
             self.vsync_reads += 1
             return 8 if (self.vsync_reads // 2) % 2 else 0
-        if port == 0x64 and self.frames_by_poll:
-            self.flips += 1
         if port in (0x64, 0x60):
             return 1 if self.esc() else 0
         return 0
@@ -586,26 +584,12 @@ def test_exit_and_pacing():
     check(blk.index("out dx,al") < blk.index("call wait_vsync") < blk.index("call palette_tick"),
           "present: writes the CRTC start address BEFORE waiting for retrace (correct however the CRTC latches), palette after")
 
-def test_intro(frames=40):
-    print(f"\n== UBER256.COM ({frames} frames, Esc pressed after) ==")
-    m = Machine("UBER256.COM", frames, frames_by_poll=True)
-    m.run(frames + 5, slice_=5_000_000, budget=3_000_000_000)
-    print(f"  {m.flips} frames rendered")
-    check(not m.unmapped, f"no access outside mapped memory {m.unmapped[:3]}")
-    check(0x13 in m.modes and 3 in m.modes, "enters mode 13h and restores text mode 3")
-    check(m.exited, "terminates (returns to PSP INT 20h) after Esc")
-    check(len(m.irq_writes) >= 2 and (m.irq_writes[0] & 2) and not (m.irq_writes[-1] & 2),
-          "IRQ1 masked while running, unmasked again at exit")
-    check(m.uc.reg_read(UC_X86_REG_SP) == 0, "stack balanced: final RET popped exactly the DOS return word")
-
 TESTS = {"lines": test_lines, "crtc": test_crtc, "math": test_math, "palette": test_palette, "gfx": test_gfx, "bounce": test_bounce, "fields": test_fields, "music": test_music,
-         "exit": test_exit_and_pacing, "scenes": test_scenes, "intro": test_intro}
+         "exit": test_exit_and_pacing, "scenes": test_scenes}
 
 if __name__ == "__main__":
     which = sys.argv[1:] or list(TESTS)
     for w in which:
-        if w == "lines" and len(sys.argv) > 2 and sys.argv[1] == "lines": TESTS[w](int(sys.argv[2]))
-        elif w.isdigit(): continue
-        else: TESTS[w]()
+        TESTS[w]()
     print("\nRESULT:", "ALL PASS" if not fails else f"{len(fails)} FAILED:\n  - " + "\n  - ".join(fails))
     sys.exit(1 if fails else 0)

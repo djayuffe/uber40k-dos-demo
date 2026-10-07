@@ -3,9 +3,8 @@ from pathlib import Path
 import re,sys
 r=Path(__file__).parent
 s=(r/"showcase.asm").read_text()
-i=(r/"intro256.asm").read_text()
 errors=[]
-for f in ["showcase.asm","intro256.asm","build.sh","run-dosbox.sh","DOSBOX.CONF",
+for f in ["showcase.asm","build.sh","run-dosbox.sh","DOSBOX.CONF",
           "README.md","TECHNICAL.md","CHANGELOG.md","audit.py","audit_final.py",
           "tests/emu_test.py","tests/run_tests.sh"]:
     if not (r/f).exists(): errors.append("missing "+f)
@@ -28,9 +27,8 @@ for x in ["call wait_vsync","call palette_tick","call music_tick",
           "star_bounce:","draw_core_octa:","draw_core_cube:","render_faces:","fill_poly:","sincos16:","fill_sky:","star_pass:"]:
     if x not in s: errors.append("missing invariant "+x)
 if "org 100h" not in s.lower() or "bits 16" not in s.lower(): errors.append("showcase COM model")
-if "org 100h" not in i.lower() or "bits 16" not in i.lower(): errors.append("intro COM model")
 b=(r/"build.sh").read_text()
-if "256" not in b or "nasm" not in b.lower(): errors.append("build size gate/tool")
+if "40960" not in b or "nasm" not in b.lower(): errors.append("build size gate/tool")
 if errors:
     print("RELEASE AUDIT: FAIL")
     print("\n".join(errors));sys.exit(1)
@@ -42,4 +40,4 @@ print("  true VGA hardware double buffering (128K window + CRTC page flip)")
 print("  OPL2 FM music: lead/bass/pad/echo + kick/snare/hat (port 388h)")
 print("  behavioural emulator tests present (tests/)")
 print("  palette, input, video and cleanup invariants")
-print("  strict intro build gate present")
+print("  40K size gate present")
