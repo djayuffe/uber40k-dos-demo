@@ -4,6 +4,20 @@ Releases are tagged `vX.Y.Z`; pushing a tag runs `.github/workflows/release.yml`
 which builds, audits, tests and attaches `UBER256.COM`, `UBERSHOW.COM` and
 `SHA256SUMS`. The notes for a tag are taken from its section below.
 
+## [1.4.0] - 2026-10-08
+
+### Added
+- **Two new scenes** (20 in total): a **radar** sweep and a **rotozoomer**
+  (a tiled bullseye texture rotated and zoomed with two accumulators). The finale moves
+  to scene 20.
+- **Denser starfield**: 96 stars instead of 32.
+
+### Changed
+- **Interleaved palette sweep**: each frame rewrites every fourth DAC entry instead of one
+  contiguous block, which removes the diagonal colour seams visible in the moire scene.
+- Tunnel now has eight spokes, so it reads as a tunnel instead of a three-petal flower.
+- Tests cover the new scenes (palette range, instruction budget) and the 20-scene wrap.
+
 ## [1.3.0] - 2026-10-07
 
 ### Added

@@ -60,7 +60,7 @@ is last so a wipe can never cover it.
   brightness during a fade; scene-art entries are scaled by `v*(limit+1)/64`.
   Scaling, not clamping, keeps hue (clamping `(20,8,28)` at 16 gives
   `(16,8,16)`).
-- **Animated sweep second**, indices 42-255 only, skipped entirely in scenes 15-16. In the field scenes it is split across four frames (one 64-index block per frame, chosen by `bp`) because the full sweep does not fit vertical blank; during a fade the whole range is rewritten, since stale blocks would show as brightness steps.
+- **Animated sweep second**, indices 42-255 only, skipped entirely in scenes 15-16. In the field scenes it is split across four frames: frame `q = bp mod 4` rewrites every fourth entry (index = q mod 4, each with its own index write), because the full sweep does not fit vertical blank. Interleaving rather than writing one contiguous 64-entry block per frame removes the visible seams a block boundary used to leave. During a fade the whole range is rewritten, since stale entries would show as brightness steps.
 
 Order matters: the sweep is ~640 port writes, longer than vertical blank. When it
 ran first the DAC changed part-way down the screen (a visible horizontal tear
@@ -73,16 +73,16 @@ global fade-in is needed.
 
 ## Scene sequencing
 
-`cur_scene` is a 0..17 byte counter advanced in `present:` once every `2^SCENE_SHIFT`
+`cur_scene` is a 0..19 byte counter advanced in `present:` once every `2^SCENE_SHIFT`
 frames (512, ~7.3 s) and wrapped at `SCENE_COUNT`; the dispatch, the progress strip
 and the music transposition all read it, so they cannot disagree. It is deliberately
-not `(bp >> 9) mod 18`: `bp` is 16-bit, so that form has only 128 groups of 512
-frames and `128 mod 18 = 2`, which replayed scenes 0 and 1 once at every wrap of the
+not `(bp >> 9) mod 20`: `bp` is 16-bit, so that form has only 128 groups of 512
+frames and `128 mod 20 = 8`, which replayed scenes 0 and 1 once at every wrap of the
 clock (after ~15.6 minutes). `tests/emu_test.py wrap` runs across the wrap and checks
 the index never jumps. `SCENE_SHIFT` must stay at least 2 (the palette code shifts by
 `SCENE_SHIFT-2`).
 
-Scenes 1-15 and 18 use the field engine below; scenes 16-17 clear with `fill_sky` and draw 3D content.
+Scenes 1-15 and 18-20 use the field engine below; scenes 16-17 clear with `fill_sky` and draw 3D content.
 
 ### Field engine (the "hyper-optimised" renderer)
 
@@ -99,6 +99,9 @@ evaluated sines per pixel (2-3M instructions/frame); the engine does ~240k.
   turn, from a 65-entry atan table on min/max folded into the right octant) and
   `floor(sqrt(6(dx^2+dy^2)))` (an integer square root). Tests check both against
   `atan2`/`sqrt` for all 16,000 blocks.
+- **Rotozoomer** (`fieldR`): the two 8.8 accumulators are texture coordinates and the top nibble of
+  each indexes the 16x16 `tex_tab` tile; centring on (80,50) only needs the low 16 bits, because the
+  texture repeats every 65536. **Radar** is `fieldM` with a squared-sawtooth `ta_tab` (`tab_ramp`).
 - **Loops**: `fieldW` = `sin56[acc1] + sin56[acc2] + row term` with 8.8 phase
   accumulators (steps in `w_st*`, `w_ry*`); `fieldM` = `ta_tab[angle] + tr_tab[radius]`;
   `fieldS` = `sin165[ta_tab[angle] + tr_tab[radius]]` (spirals). The 256-entry

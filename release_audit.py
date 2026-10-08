@@ -11,7 +11,7 @@ for f in ["showcase.asm","build.sh","run-dosbox.sh","DOSBOX.CONF",
 targets=["scene_plasma","scene_tunnel","scene_xor","scene_moire","scene_checker",
          "scene_ripples","scene_twister","scene_feedback","scene_copper","scene_diamond",
          "scene_lattice","scene_warp","scene_scanwave","scene_bitplane","scene_vortex",
-         "scene_cube","scene_starfield","scene_finale"]
+         "scene_cube","scene_starfield","scene_radar","scene_rotozoom","scene_finale"]
 for x in targets:
     if s.count(x+":")!=1: errors.append("scene label "+x)
 for x in ["call wait_vsync","call palette_tick","call music_tick",
@@ -33,7 +33,7 @@ if errors:
     print("RELEASE AUDIT: FAIL")
     print("\n".join(errors));sys.exit(1)
 print("RELEASE AUDIT: PASS")
-print("  18 explicit scenes (16 fields + 3D cube/octahedron engine + 3D starfield)")
+print("  20 explicit scenes (17 fields + 3D cube/octahedron engine + 3D starfield)")
 print("  bottom sine-wave text scroller")
 print("  own-block SETBLOCK shrink (code/data/stack)")
 print("  true VGA hardware double buffering (128K window + CRTC page flip)")

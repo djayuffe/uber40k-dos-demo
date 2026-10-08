@@ -4,7 +4,7 @@ BITS 16
 ORG 100h
 
 %define SCENE_SHIFT 9             ; 512 frames/scene (~7.3 s at 70 Hz)
-%define SCENE_COUNT 18            ; 18 primary scenes (16 fields + cube + starfield)
+%define SCENE_COUNT 20            ; 20 scenes (17 fields + cube + starfield + rotozoomer... see dispatch)
 %define SCROLL_BASE_Y 182         ; bottom text-scroller baseline row
 %define SCROLL_BG 1                ; fixed black (see palette_tick reserved DAC entries)
 ; Scroller foreground cycles across fixed DAC indices 4..7 (a small rainbow,
@@ -20,7 +20,7 @@ ORG 100h
 %define LIGHT_X -4                ; light direction (toward the light), |L| = 14
 %define LIGHT_Y -6
 %define LIGHT_Z -12
-%define STAR_COUNT 32             ; stars in scene_starfield
+%define STAR_COUNT 96             ; stars in the starfield
 %define STAR_SCALE 20             ; starfield perspective projection scale
 
 start:
@@ -66,6 +66,7 @@ start:
     or al,2                       ; mask IRQ1 so BIOS int 9 cannot race
     out 21h,al                    ; our own port-60h/64h polling for Esc
     call build_tabs
+    call build_tex
     call build_maps
     xor bp,bp
     call palette_tick
@@ -119,6 +120,10 @@ main:
     je scene_cube
     cmp al,16
     je scene_starfield
+    cmp al,17
+    je scene_radar
+    cmp al,18
+    je scene_rotozoom
     jmp scene_finale
 
 ; ---------------------------------------------------------------------------
@@ -177,7 +182,7 @@ scene_tunnel:
     mov ax,bp
     add ax,ax
     mov bl,al
-    TABLIN sin56,ta_tab,3,0
+    TABLIN sin56,ta_tab,8,0
     call tab_depth
     call fieldM
     jmp overlay
@@ -393,7 +398,83 @@ scene_starfield:
     call star_pass
     jmp overlay
 
-; 18: finale: a fast two-armed spiral
+; 18: radar: a bright beam sweeps round and fades behind itself, over a faint
+; ring grid
+scene_radar:
+    mov ax,bp
+    mov bx,ax
+    add ax,ax
+    add ax,bx
+    neg ax
+    mov bl,al
+    mov di,ta_tab
+    call tab_ramp
+    mov ax,bp
+    shl ax,1
+    mov bl,al
+    TABLIN sin56,tr_tab,6,0
+    mov si,tr_tab
+    mov cx,256
+.rs:
+    shr byte [si],2               ; faint rings: a quarter of the beam's amplitude
+    inc si
+    loop .rs
+    call fieldM
+    jmp overlay
+; 19: rotozoomer: a 16x16 bullseye tile, rotated and zoomed about the screen centre
+scene_rotozoom:
+    mov bx,bp
+    shl bx,1
+    push bx
+    add bx,64
+    and bx,255
+    movsx ax,byte [sintab+bx]     ; cos
+    mov si,ax
+    pop bx
+    and bx,255
+    movsx di,byte [sintab+bx]     ; sin
+    mov bx,bp
+    add bx,bx
+    add bx,bx
+    and bx,255
+    movsx ax,byte [sintab+bx]     ; zoom oscillator
+    shl ax,2
+    add ax,1300                   ; Z = 800..1800 (8.8 steps per block)
+    sar ax,3
+    mov bx,ax                     ; Z/8
+    mov ax,si
+    imul ax,bx
+    sar ax,4                      ; du = cos * Z / 128
+    mov si,ax
+    mov ax,di
+    imul ax,bx
+    sar ax,4                      ; dv = sin * Z / 128
+    mov [w_st1],si
+    mov [w_st2],ax
+    mov bx,ax
+    neg bx
+    mov [w_ry1],bx                ; u changes by -dv per row, v by +du
+    mov [w_ry2],si
+    ; start so that the screen centre (80,50) sits at the texture origin; only
+    ; the low 16 bits matter, since the texture repeats every 65536
+    mov bx,si
+    imul bx,80
+    neg bx
+    mov di,ax
+    imul di,50
+    add bx,di
+    mov [w_p1],bx                 ; -80*du + 50*dv
+    mov bx,ax
+    imul bx,80
+    mov di,si
+    imul di,50
+    add bx,di
+    neg bx
+    mov [w_p2],bx                 ; -80*dv - 50*du
+    call fieldR
+    jmp overlay
+
+; 20: finale: a fast two-armed spiral
 scene_finale:
     mov bx,bp
     neg bx
@@ -486,7 +567,7 @@ present:
     inc bp
     ; Advance the scene counter every 2^SCENE_SHIFT frames. It is a counter, not
     ; (bp >> SCENE_SHIFT) mod SCENE_COUNT: bp is 16-bit, so that expression has
-    ; only 128 groups of 512 frames and 128 mod 18 = 2, which replayed scenes 0
+    ; only 128 groups of 512 frames and 128 mod 20 = 8, which replayed scenes 0
     ; and 1 once at every wrap of the frame clock.
     test bp,(1 << SCENE_SHIFT) - 1
     jnz .same_scene
@@ -669,6 +750,28 @@ tab_lin:
     jnz .tl
     ret
 
+; table[i] = 42 + 140 * (k/255)^2 with k = 255 - ((i + BL) & 255): brightest at
+; i = -BL and fading quickly away from it (DI = destination). The radar beam.
+tab_ramp:
+    xor cx,cx
+.tr:
+    mov al,bl
+    not al
+    mov ah,al
+    mul ah                        ; squared: the beam fades quickly, a sharp wedge
+    mov al,ah
+    mov ah,140
+    mul ah
+    mov al,ah
+    add al,FIXED_PAL_COUNT+1
+    mov [di],al
+    inc di
+    inc bl
+    inc cx
+    cmp cx,256
+    jb .tr
+    ret
+
 ; tr_tab[r] = sin56[2600/(r+10) - 4*frame] + 42: a true perspective depth
 ; (1/r), which is what makes the tunnel look like a tunnel.
 tab_depth:
@@ -728,6 +831,44 @@ fieldW:
     mov bl,ch
     add al,[sin56+bx]
     add al,[rowc]
+    add dx,[w_st1]
+    add cx,[w_st2]
+    mov ah,al
+    stosw
+    mov [es:di+318],ax
+    cmp di,[row_end]
+    jb .px
+    add di,320
+    dec word [fw_y]
+    jnz .row
+    ret
+
+; fieldR (rotozoomer): the two 8.8 accumulators are texture coordinates (u in DX,
+; v in CX); the top nibble of each indexes the 16x16 tile.
+fieldR:
+    mov ax,[w_p1]
+    mov [wr1],ax
+    mov ax,[w_p2]
+    mov [wr2],ax
+    xor di,di
+    xor bh,bh
+    mov word [fw_y],100
+.row:
+    mov dx,[wr1]
+    mov ax,[w_ry1]
+    add [wr1],ax
+    mov cx,[wr2]
+    mov ax,[w_ry2]
+    add [wr2],ax
+    lea ax,[di+320]
+    mov [row_end],ax
+.px:
+    mov bl,dh
+    and bl,0F0h
+    mov al,ch
+    shr al,4
+    or bl,al
+    mov al,[tex_tab+bx]
     add dx,[w_st1]
     add cx,[w_st2]
     mov ah,al
@@ -813,6 +954,30 @@ build_tabs:
     inc si
     cmp si,256
     jb .bt
+    ret
+
+; The rotozoomer tile: a 16x16 bullseye, tex[i][j] = sin165[(dist^2 of (i,j) from
+; the tile centre) * 2], so tiling it gives a lattice of rings.
+build_tex:
+    xor si,si
+.bx:
+    mov ax,si
+    shr ax,4
+    sub ax,8
+    imul ax,ax
+    mov bx,si
+    and bx,15
+    sub bx,8
+    imul bx,bx
+    add ax,bx
+    shl ax,1                      ; 0..256: one smooth ring cycle across the tile
+    mov bl,al
+    xor bh,bh
+    mov al,[sin165+bx]
+    mov [tex_tab+si],al
+    inc si
+    cmp si,256
+    jb .bx
     ret
 
 ; integer square root: AX = floor(sqrt(AX)) (AX treated as unsigned)
@@ -989,29 +1154,37 @@ palette_tick:
     sub al,15                    ; entries: skip the sweep entirely
     cmp al,2
     jb .done
-    ; The sweep is spread over four frames (a 64-index block per frame, chosen
-    ; by bp) so each frame's DAC traffic still fits vertical blank; the colours
-    ; only drift one step per frame, so a block that is up to 3 frames stale is
-    ; invisible. While a scene fades the whole range is rewritten instead, since
-    ; stale blocks would show as brightness steps (the screen is dark then).
-    mov byte [sweep_mask],255
+    ; The sweep is spread over four frames so each frame's DAC traffic still fits
+    ; vertical blank: frame q rewrites every fourth entry (index = q mod 4), each
+    ; with its own index write. Interleaving, rather than one contiguous block per
+    ; frame, means stale entries sit between fresh ones, so there is no visible
+    ; seam where a block ends. While a scene fades the whole range is rewritten
+    ; instead, because stale entries would show as brightness steps (the screen
+    ; is dark then).
+    mov byte [sweep_step],1
+    mov cl,FIXED_PAL_COUNT+1
     cmp byte [pal_limit],63
-    jne .sw_full
-    mov byte [sweep_mask],63
+    jne .sw_go
+    mov byte [sweep_step],4
     mov ax,bp
     and al,3
-    mov cl,6
-    shl al,cl                    ; AL = first index of this frame's block
-    jnz .sw_go
-.sw_full:
-    mov al,FIXED_PAL_COUNT+1     ; block 0 / full sweep start after the fixed entries
+    sub al,2                      ; first index >= 42 congruent to bp mod 4
+    and al,3
+    add cl,al
 .sw_go:
-    mov cl,al
+    mov al,cl
     mov dx,3C8h
     out dx,al
     inc dx
     xor ch,ch                    ; CX = palette index
 .pt:
+    cmp byte [sweep_step],1
+    je .noidx
+    dec dx
+    mov al,cl
+    out dx,al                    ; interleaved: select this entry explicitly
+    inc dx
+.noidx:
     mov ax,cx
     add ax,bp
     mov bx,bp
@@ -1042,9 +1215,8 @@ palette_tick:
     call .limit
     out dx,al
 
-    inc cl
-    test cl,[sweep_mask]
-    jnz .pt
+    add cl,[sweep_step]
+    jnc .pt
 .done:
     ret
 .fpout:
@@ -2754,9 +2926,10 @@ tr_tab times 256 db 0
 sin56 times 256 db 0
 sin165 times 256 db 0
 ident times 256 db 0
+tex_tab times 256 db 0
 atan_tab db 0,1,1,2,3,3,4,4,5,6,6,7,8,8,9,9,10,11,11,12,12,13,13,14,15,15,16,16,17,17,18,18,19,19,20,20,21,21,22,22,23,23,24,24,25,25,25,26,26,27,27,27,28,28,29,29,29,30,30,30,31,31,31,32,32
 star_idx dw 0
-sweep_mask db 255
+sweep_step db 1
 star_hit db 0
 bounce_on db 0
 bnc_r dw 0
@@ -2766,10 +2939,18 @@ bnc_f dw 0
 star_z dw 0
 star_sx dw 0
 star_sy dw 0
-star_base_x dw -93,-10,-36,-98,129,66,-135,-39,108,-137,-49,129,-38,-8,-69,66
-            dw -8,-40,-98,44,33,-15,85,-87,-110,0,35,-52,-115,-34,-110,-99
-star_base_y dw -89,-33,-60,78,-73,-87,-72,-36,59,48,88,12,19,-94,83,-8
-            dw -56,-9,-72,-71,-7,-84,42,1,46,65,52,85,-84,-21,-36,2
+star_base_x dw 94,128,-15,-35,38,85,130,-74,-37,95,-50,20,-12,-66,127,68
+            dw 21,31,-62,-57,18,9,-60,-33,81,-108,-36,-136,99,15,-43,96
+            dw -90,29,92,133,-14,-121,57,88,72,-131,105,-17,85,-41,-59,-11
+            dw -94,32,-13,-17,-112,-20,74,80,19,122,-124,64,-60,-57,-126,45
+            dw 78,128,-122,126,103,136,130,-119,47,-83,123,-127,-131,-78,-45,-128
+            dw 42,32,71,-123,-51,-126,-92,88,-5,104,91,59,90,104,-38,45
+star_base_y dw 53,-87,-23,-63,-25,-88,93,-80,63,-82,59,-66,-12,36,-71,-83
+            dw 92,-37,-16,38,83,23,55,30,37,-52,60,-73,61,-67,-34,21
+            dw 25,64,-23,51,-78,-57,-48,-68,-47,12,37,-39,90,-52,-17,76
+            dw -51,-54,-81,-48,34,-41,77,26,-16,-32,68,-85,69,-16,-18,5
+            dw -13,89,41,-30,-30,-90,-41,52,-23,-86,48,-17,-29,-53,55,-91
+            dw -44,59,28,80,-20,28,-32,27,91,-36,58,-11,90,-89,15,70
 
 cube_verts: dw -40,-40,-40
             dw  40,-40,-40

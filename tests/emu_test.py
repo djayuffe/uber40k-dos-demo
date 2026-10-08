@@ -433,7 +433,7 @@ def test_fields():
     # every field scene: pixels come from the animated palette range, and the frame is cheap
     from unicorn.x86_const import UC_X86_REG_IP
     worst = 0
-    for scene in (0, 1, 2, 3, 5, 7, 8, 13, 14, 17):
+    for scene in (0, 1, 2, 3, 5, 7, 8, 13, 14, 17, 18, 19):
         com2, _ = assemble(force_scene(scene), f"fs{scene}")
         mm = Machine(com2, 60); marks, st, lows = [], {"used": 0}, []
         def hook(m2, page, f, marks=marks, st=st, lows=lows):
@@ -549,7 +549,7 @@ def test_palette():
 
 # ------------------------------------------------------------ other programs
 def test_scenes():
-    print("\n== all 18 scenes + all 3 acts (SCENE_SHIFT=2 variant) ==")
+    print("\n== all 20 scenes + all 3 acts (SCENE_SHIFT=2 variant) ==")
     com, lst = assemble([("%define SCENE_SHIFT 9", "%define SCENE_SHIFT 2")], "scenes")
     cs = LIN + symbol(lst, "cur_scene")
     m = Machine(com, 150)
@@ -565,7 +565,7 @@ def test_scenes():
     m.run(170, budget=4_000_000_000)
     print(f"  {m.flips} frames; scenes seen: {sorted(seen)}")
     check(not m.unmapped, f"no access outside mapped memory {m.unmapped[:3]}")
-    check(seen == set(range(18)), f"all 18 scenes executed (missing {sorted(set(range(18)) - seen)})")
+    check(seen == set(range(20)), f"all 20 scenes executed (missing {sorted(set(range(20)) - seen)})")
     check(not overruns, f"no scene writes past the 64,000-byte page {overruns[:3]}")
     check(len(set(m.sp_at_frame)) == 1, f"stack balanced through every scene (SPs {sorted(set(map(hex, m.sp_at_frame)))})")
     check(m.exited, "still exits cleanly on Esc after cycling every scene")
@@ -632,10 +632,10 @@ def test_wrap():
     m.flip_hooks.append(hook)
     m.run(170, budget=4_000_000_000)
     wrapped = any(b < a for a, b in zip(bps, bps[1:]))
-    steps = [(b - a) % 18 for a, b in zip(seq, seq[1:])]
+    steps = [(b - a) % 20 for a, b in zip(seq, seq[1:])]
     check(wrapped, "the run crosses the wrap of the 16-bit frame clock")
     check(set(steps) <= {0, 1}, f"scene index only ever stays or advances by one, including at the wrap (steps {sorted(set(steps))})")
-    check(len(seq) > 100 and seq.count(seq[0]) >= 1 and len(set(seq)) == 18, f"every one of the 18 scenes appears ({len(set(seq))})")
+    check(len(seq) > 100 and seq.count(seq[0]) >= 1 and len(set(seq)) == 20, f"every one of the 20 scenes appears ({len(set(seq))})")
     check(sum(steps) >= 36, f"scenes keep advancing after the wrap ({sum(steps)} advances)")
 
 def test_exit_and_pacing():

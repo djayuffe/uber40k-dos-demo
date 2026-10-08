@@ -4,14 +4,14 @@ import re, sys
 p=Path(__file__).with_name("showcase.asm")
 s=p.read_text()
 errors=[]
-for lab in ("fieldW:","fieldM:","fieldS:","build_maps:","build_tabs:","tab_lin:"):
+for lab in ("fieldW:","fieldM:","fieldS:","fieldR:","build_maps:","build_tabs:","build_tex:","tab_lin:","tab_ramp:"):
     if lab not in s: errors.append("missing field engine routine "+lab)
-for lab in ("fieldW:","fieldM:","fieldS:"):
+for lab in ("fieldW:","fieldM:","fieldS:","fieldR:"):
     body=s[s.index(lab):s.index("\n    ret\n",s.index(lab))]
     if "stosw" not in body: errors.append(lab+" has no pixel store")
     if "add di,320" not in body: errors.append(lab+" does not skip the duplicated row")
 required=[
-"%define SCENE_COUNT 18","call wait_vsync","call palette_tick",
+"%define SCENE_COUNT 20","call wait_vsync","call palette_tick",
 "in al,64h","in al,60h","scene_finale:","scene_cube:",
 "scene_starfield:","pal_limit db 63","scene_marker:","transition_wipe:",
 "call scene_marker","call transition_wipe","scroll_draw:","call scroll_draw",
@@ -30,7 +30,7 @@ required=[
 for x in required:
     if x not in s: errors.append("missing: "+x)
 scenes=re.findall(r"^scene_(?!marker)[a-z0-9_]+:",s,re.M)
-if len(scenes)!=18: errors.append(f"expected 18 scenes, found {len(scenes)}")
+if len(scenes)!=20: errors.append(f"expected 20 scenes, found {len(scenes)}")
 # scenes whose contract isn't "full 320x200 STOSB sweep ending in jmp overlay"
 SPECIAL = {
     # scene_cube renders two objects (cube + octahedron) through the shared
@@ -66,4 +66,4 @@ if "mov es,ax\n    xor di,di" not in s:
 if errors:
     print("AUDIT FAIL")
     print("\n".join(errors)); sys.exit(1)
-print("AUDIT PASS: 18 scenes, framebuffer/presentation/cleanup invariants present")
+print("AUDIT PASS: 20 scenes, framebuffer/presentation/cleanup invariants present")

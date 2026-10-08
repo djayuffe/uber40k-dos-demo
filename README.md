@@ -13,7 +13,7 @@ code. "40K" names the size class (a 40,960-byte budget); the full show uses a qu
 
 | Program | What it is | Size | Video | Audio |
 |---|---|---|---|---|
-| `UBERSHOW.COM` (`showcase.asm`) | 18-scene demo: 3D engine, starfield, scroller, music | ~10 KB | VGA mode 13h | OPL2 FM |
+| `UBERSHOW.COM` (`showcase.asm`) | 20-scene demo: 3D engine, starfield, scroller, music | ~10 KB | VGA mode 13h | OPL2 FM |
 
 Looking for the 256-byte intro? It has its own repo: [uber256-dos-intro](https://github.com/djayuffe/uber256-dos-intro).
 
@@ -56,8 +56,10 @@ All captured from the real binary running in DOSBox.
 
 | | |
 |---|---|
-| ![Sine plasma](docs/plasma.jpg) | ![Spiral vortex](docs/spiral.jpg) |
-| **Scene 1: sine plasma.** Three sine waves summed and mapped onto the animated palette, with the shadowed sine scroller along the bottom. | **Scene 15: spiral vortex.** Coordinates are rotated by an angle that grows with distance from the centre. |
+| ![Sine plasma](docs/plasma.jpg) | ![Moire](docs/moire.jpg) |
+| **Scene 1: sine plasma.** Three sine waves summed and mapped onto the animated palette, with the shadowed sine scroller along the bottom. | **Scene 4: moire.** Fine rays against rings, read from precomputed polar maps. |
+| ![Spiral vortex](docs/spiral.jpg) | ![Rotozoomer](docs/rotozoomer.jpg) |
+| **Scene 15: spiral vortex.** Coordinates are rotated by an angle that grows with distance from the centre. | **Scene 19: rotozoomer.** A tiled bullseye texture, rotated and zoomed with two 8.8 accumulators. |
 | ![Solid shaded 3D](docs/solid3d.jpg) | ![Wireframe force-fields](docs/wireframe.jpg) |
 | **Scene 16, solid phase.** Perspective projection, backface culling and a directional light with a 16-step shading ramp, over a night-sky gradient with stars. | **Scene 16, wireframe phase.** The objects become hollow force-fields: stars bounce off them and a small solid core spins inside each. |
 
@@ -81,13 +83,15 @@ All captured from the real binary running in DOSBox.
 | 14 | Rotating grid | wave directions turn with time |
 | 15 | Vortex | three-armed spiral |
 | 16 | **Cube + octahedron (3D engine)** | solid shaded, wireframe force-fields with bouncing stars |
-| 17 | **3D starfield** | perspective stars with trails |
-| 18 | Finale | fast two-armed spiral |
+| 17 | **3D starfield** | 96 perspective stars with trails, surging on the kick |
+| 18 | Radar | a sweeping beam that fades behind itself, over faint rings |
+| 19 | Rotozoomer | a 16x16 bullseye tile rotated and zoomed about the centre |
+| 20 | Finale | fast two-armed spiral |
 
-Scenes 1-15 and 18 run on a lookup-table field engine (see Performance below), so they
+Scenes 1-15 and 18-20 run on a lookup-table field engine (see Performance below), so they
 are smooth and cheap. Scenes 16-17 draw 3D content instead. Every scene has raster bars
 (except the 3D ones), a progress strip, fades, and the bottom scroller.
-Each scene lasts 512 frames (~7.3 s at 70 Hz); a full pass is ~2 minutes.
+Each scene lasts 512 frames (~7.3 s at 70 Hz); a full pass is ~2.5 minutes.
 
 ## Performance: built to hold 70 Hz
 
@@ -130,7 +134,7 @@ Three layers, because each catches what the others cannot:
    trapping port I/O and DOS/BIOS calls. Checks that every note is in tune and in key,
    drums land where intended, the chip is silenced at exit, solid faces are lit and
    culled, rotation is smooth, `sincos16`/`fill_poly`/`draw_line` match oracles, the
-   fade is proportional, stars bounce, all 18 scenes stay inside their page, and the
+   fade is proportional, stars bounce, all 20 scenes stay inside their page, and the
    frame loop flips in the right order. Run one group with `tests/run_tests.sh music`.
 3. **A real DOSBox run**: the only way to judge how it looks. This caught a palette
    tear that the other two layers could not see.
